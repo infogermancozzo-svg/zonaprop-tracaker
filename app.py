@@ -28,12 +28,21 @@ def cargar_datos():
         else:
             df = pd.DataFrame(columns=columnas_base)
     
+    # Unificar por si quedó alguna columna vieja sin tilde ("Titulo")
+    if "Titulo" in df.columns and "Título" not in df.columns:
+        df.rename(columns={"Titulo": "Título"}, inplace=True)
+    
+    # Eliminar cualquier columna duplicada exacta
     df = df.loc[:, ~df.columns.duplicated()]
+    
+    # Asegurar que existan todas las columnas base
     for col in columnas_base:
         if col not in df.columns:
             df[col] = False if col == "Borrar" else ""
             
-    # Asegurar tipo booleano para la columna de borrado
+    # Forzar el orden exacto para que Título aparezca una única vez
+    df = df[[col for col in columnas_base if col in df.columns]]
+            
     df["Borrar"] = df["Borrar"].fillna(False).astype(bool)
             
     for col in ["Barrio", "Piso", "Notas Personales", "Historial Precio", "Título", "Link"]:
@@ -53,7 +62,6 @@ def guardar_datos(df):
         df["M2 Ponderados"] = df["M2 Cubiertos"] + (m2_descubiertos * 0.5)
         df["USD/m2 Promedio"] = df.apply(lambda row: round(row["Precio (USD)"] / row["M2 Ponderados"]) if row["M2 Ponderados"] > 0 and row["Precio (USD)"] > 0 else 0, axis=1)
 
-    # No guardamos la columna de borrado en el CSV final
     df_para_guardar = df.drop(columns=["Borrar"], errors="ignore")
     df_para_guardar.to_csv(ARCHIVO_CSV, index=False)
     
@@ -236,7 +244,6 @@ if not df.empty:
 
 st.subheader("Propiedades Registradas (Editables)")
 if not df.empty:
-    # Configuramos la columna de borrado para que aparezca primero como casillas interactivas
     column_config = {
         "Borrar": st.column_config.CheckboxColumn(
             "🗑️ Borrar",
@@ -256,7 +263,6 @@ if not df.empty:
             
     with col_del:
         if st.button("🗑️ Eliminar filas marcadas"):
-            # Filtrar fuera las filas donde 'Borrar' esté marcado como True
             df_filtrado = df_editado[df_editado["Borrar"] == False]
             guardar_datos(df_filtrado)
             st.success("¡Propiedades seleccionadas eliminadas con éxito!")
