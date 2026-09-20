@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import requests
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 import re
 import os
@@ -8,7 +8,6 @@ from huggingface_hub import HfApi, hf_hub_download
 
 st.set_page_config(page_title="Gestor de Inversiones Inmobiliarias", page_icon="🏢", layout="wide")
 
-# Configuración de credenciales desde los Secrets de Streamlit Cloud
 HF_TOKEN = st.secrets.get("HF_TOKEN", "")
 REPO_ID = st.secrets.get("DATASET_REPO", "")
 ARCHIVO_CSV = "Avisos propiedades en venta.csv"
@@ -52,22 +51,22 @@ def guardar_datos(df):
             st.error(f"Error al sincronizar con Hugging Face: {e}")
 
 def extraer_datos_web(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept-Language": "es-AR,es;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
     try:
-        respuesta = requests.get(url, headers=headers, timeout=10)
-        if respuesta.status_code != 200: return None
+        # Usamos curl_cffi simulando un navegador Chrome para saltar Cloudflare
+        respuesta = requests.get(url, impersonate="chrome", timeout=12)
+        if respuesta.status_code != 200: 
+            return None
             
         sopa = BeautifulSoup(respuesta.text, 'html.parser')
         
+        # Extraer metadatos y texto completo de la página
         titulo = sopa.find("meta", property="og:title")
         descripcion = sopa.find("meta", property="og:description")
         texto_titulo = titulo["content"] if titulo else "Propiedad"
         texto_desc = descripcion["content"] if descripcion else ""
         texto_completo = f"{texto_titulo} {texto_desc} {sopa.get_text(separator=' ')}".upper()
         
+        # Detección de Barrio CABA
         barrios_caba = ["VILLA URQUIZA", "BELGRANO", "PALERMO", "CABALLITO", "RECOLETA", "NUÑEZ", "NUNEZ", "SAAVEDRA", "COGHLAN", "VILLA CRESPO", "ALMAGRO", "COLEGIALES", "CHACARITA", "DEVOTO", "VILLA DEL PARQUE", "PATERNAL", "FLORES", "MICROCENTRO", "SAN TELMO", "PUERTO MADERO", "RETIRO", "BARRACAS", "BOEDO", "BALVANERA", "LINIERS", "MATADEROS", "PARQUE CHACABUCO", "PARQUE PATRICIOS", "SAN CRISTOBAL", "VILLA LURO", "VILLA PUEYRREDON", "VILLA ORTUZAR"]
         barrio = ""
         for b in barrios_caba:
@@ -75,33 +74,55 @@ def extraer_datos_web(url):
                 barrio = b.title()
                 break
 
+        # Si el scraping de texto no encuentra el barrio, respaldamos con la URL
+        if not barrio:
+            url_lower = url.lower()
+            for b in barrios_caba:
+                if b.replace(" ", "-") in url_lower:
+                    barrio = b.title()
+                    break
+
+        # Detección de Piso
         piso = ""
-        if re.search(r'\b(?:PB|PLANTA\s*BAJA)\b', texto_completo): piso = "PB"
+        if re.search(r'\b(?:PB|PLANTA\s*BAJA)\b', texto_completo): 
+            piso = "PB"
         else:
             piso_match = re.search(r'PISO\s*(\d+)', texto_completo)
-            if not piso_match: piso_match = re.search(r'(\d+)\s*(?:ER|RO|TO|MO|VO|NO|°|ER\.)?\s*PISO', texto_completo)
-            if piso_match: piso = piso_match.group(1)
-            else:
-                mapa_pisos = {"PRIMER": "1", "SEGUNDO": "2", "TERCER": "3", "CUARTO": "4", "QUINTO": "5", "SEXTO": "6", "SEPTIMO": "7", "OCTAVO": "8", "NOVENO": "9", "DECIMO": "10", "UNO": "1", "DOS": "2", "TRES": "3", "CUATRO": "4", "CINCO": "5"}
-                letras_match = re.search(r'(PRIMER|SEGUNDO|TERCER|CUARTO|QUINTO|SEXTO|SEPTIMO|SÉPTIMO|OCTAVO|NOVENO|DECIMO|DÉCIMO)\s*PISO', texto_completo)
-                if letras_match: piso = mapa_pisos.get(letras_match.group(1).replace('É', 'E'), "")
+            if not piso_match: 
+                piso_match = re.search(r'(\d+)\s*(?:ER|RO|TO|MO|VO|NO|°|ER\.)?\s*PISO', texto_completo)
+            if piso_match: 
+                piso = piso_match.group(1)
 
+        # Precio en USD
         precio_match = re.search(r'(?:USD|U\$S|US\$)\s*([\d\.]+)', texto_completo)
         precio = int(precio_match.group(1).replace('.', '')) if precio_match else 0
         
-        m2_tot = int(re.search(r'(\d+)\s*(?:M2|M²|METROS)\s*TOT', texto_completo).group(1)) if re.search(r'(\d+)\s*(?:M2|M²|METROS)\s*TOT', texto_completo) else (int(re.search(r'(\d+)\s*(?:M2|M²|METROS)', texto_completo).group(1)) if re.search(r'(\d+)\s*(?:M2|M²|METROS)', texto_completo) else 0)
-        m2_cub = int(re.search(r'(\d+)\s*(?:M2|M²|METROS)\s*CUB', texto_completo).group(1)) if re.search(r'(\d+)\s*(?:M2|M²|METROS)\s*CUB', texto_completo) else (int(re.search(r'CUBIERTA?S?\D*(\d+)', texto_completo).group(1)) if re.search(r'CUBIERTA?S?\D*(\d+)', texto_completo) else 0)
-        ambientes = int(re.search(r'(\d+)\s*AMB', texto_completo).group(1)) if re.search(r'(\d+)\s*AMB', texto_completo) else 0
+        # Metros y Ambientes
+        m2_tot_match = re.search(r'(\d+)\s*(?:M2|M²|METROS)\s*TOT', texto_completo)
+        m2_tot = int(m2_tot_match.group(1)) if m2_tot_match else 0
+        
+        if m2_tot == 0:
+            m2_gen = re.search(r'(\d+)\s*(?:M2|M²|METROS)', texto_completo)
+            m2_tot = int(m2_gen.group(1)) if m2_gen else 0
 
-        if m2_cub > 0 and m2_tot == 0: m2_tot = m2_cub
-        if m2_tot > 0 and m2_cub == 0: m2_cub = m2_tot
+        m2_cub_match = re.search(r'(\d+)\s*(?:M2|M²|METROS)\s*CUB', texto_completo)
+        m2_cub = int(m2_cub_match.group(1)) if m2_cub_match else m2_tot
+
         if m2_cub > m2_tot: m2_cub = m2_tot
+        if m2_tot > 0 and m2_cub == 0: m2_cub = m2_tot
+
+        amb_match = re.search(r'(\d+)\s*AMB', texto_completo)
+        ambientes = int(amb_match.group(1)) if amb_match else (1 if "monoambiente" in url.lower() else 0)
 
         m2_desc = m2_tot - m2_cub
-        m2_pond = m2_cub + (m2_desc * 0.5)
+        m2_pond = m2_cub + (m2_desc * 0.5) if m2_tot > 0 else 0
         usd_m2 = round(precio / m2_pond) if m2_pond > 0 and precio > 0 else 0
         
-        return {"Titulo": texto_titulo, "Ambientes": ambientes, "Barrio": barrio, "Piso": piso, "M2_Totales": m2_tot, "M2_Cubiertos": m2_cub, "M2_Ponderados": m2_pond, "Precio": precio, "USD_m2": usd_m2, "Link": url}
+        return {
+            "Titulo": texto_titulo, "Ambientes": ambientes, "Barrio": barrio, "Piso": piso, 
+            "M2_Totales": m2_tot, "M2_Cubiertos": m2_cub, "M2_Ponderados": m2_pond, 
+            "Precio": precio, "USD_m2": usd_m2, "Link": url
+        }
     except Exception as e:
         return None
 
@@ -112,9 +133,9 @@ df = cargar_datos()
 url_input = st.text_input("Link de Zonaprop", placeholder="Pegá el link acá...")
 if st.button("Agregar Propiedad", type="primary"):
     if url_input:
-        with st.spinner("Extrayendo datos de la propiedad..."):
+        with st.spinner("Extrayendo datos reales del aviso..."):
             datos = extraer_datos_web(url_input)
-            if datos:
+            if datos and datos["Precio"] > 0:
                 nuevo_registro = pd.DataFrame([{
                     "Título": datos["Titulo"], "Barrio": datos["Barrio"], "Piso": datos["Piso"], 
                     "Ambientes": datos["Ambientes"], "M2 Totales": datos["M2_Totales"], 
@@ -124,15 +145,27 @@ if st.button("Agregar Propiedad", type="primary"):
                 }])
                 df = pd.concat([df, nuevo_registro], ignore_index=True)
                 guardar_datos(df)
-                st.success("¡Propiedad agregada y guardada en la nube con éxito!")
+                st.success("¡Propiedad extraída y guardada con éxito en la nube!")
                 st.rerun()
             else:
-                st.error("No se pudo extraer información de este link.")
+                st.warning("No se pudo extraer automáticamente el precio. Podés ingresarlo manualmente abajo en la tabla.")
+                # Igualmente agregamos la fila vacía para que puedas completarla a mano
+                nuevo_registro = pd.DataFrame([{
+                    "Título": "Propiedad Zonaprop", "Barrio": "", "Piso": "", 
+                    "Ambientes": 0, "M2 Totales": 0, "M2 Cubiertos": 0, "M2 Ponderados": 0, 
+                    "Precio (USD)": 0, "USD/m2 Promedio": 0, "Link": url_input, "Notas Personales": "", "Historial Precio": ""
+                }])
+                df = pd.concat([df, nuevo_registro], ignore_index=True)
+                guardar_datos(df)
+                st.rerun()
     else:
         st.warning("Por favor, ingresá un link válido.")
 
-st.subheader("Propiedades Registradas")
+st.subheader("Propiedades Registradas (Editables)")
 if not df.empty:
-    st.dataframe(df, use_container_width=True)
+    df_editado = st.data_editor(df, use_container_width=True, key="tabla_props")
+    if st.button("Guardar Cambios en la Tabla"):
+        guardar_datos(df_editado)
+        st.success("¡Cambios y correcciones guardados en tu dataset de Hugging Face!")
 else:
     st.info("No hay propiedades cargadas todavía.")
