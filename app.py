@@ -93,6 +93,7 @@ def extraer_datos_web(url):
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "es-AR,es;q=0.9,en-US;q=0.8,en;q=0.7",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         respuesta = requests.get(url, impersonate="chrome110", headers=headers, timeout=15)
         
@@ -110,21 +111,7 @@ def extraer_datos_web(url):
         barrio = ""
         piso = ""
 
-        # 1. Búsqueda directa en el HTML (la forma más segura de capturar el texto largo completo)
-        div_desc = sopa.find(attrs={"data-qa": "posting-description"})
-        if not div_desc:
-            div_desc = sopa.find(id=re.compile("posting-description", re.I))
-            
-        if div_desc:
-            # Reemplazar etiquetas de salto para mantener el formato legible
-            for br in div_desc.find_all("br"):
-                br.replace_with("\n")
-            for p in div_desc.find_all("p"):
-                p.insert_before("\n")
-                p.insert_after("\n")
-            descripcion_aviso = div_desc.get_text(separator=" ").strip()
-
-        # 2. Búsqueda en los metadatos internos JSON
+        # NIVEL 1 Y 2: Extraer datos primarios y descripción del JSON interno
         next_data_tag = sopa.find("script", id="__NEXT_DATA__")
         if next_data_tag:
             try:
@@ -134,6 +121,9 @@ def extraer_datos_web(url):
                 
                 if props:
                     titulo_texto = props.get("title", titulo_texto)
+                    
+                    # Zonaprop suele tener la descripción acá
+                    descripcion_aviso = props.get("plainDescription", "")
                     if not descripcion_aviso:
                         descripcion_aviso = props.get("description", "")
                     
@@ -163,14 +153,28 @@ def extraer_datos_web(url):
             except Exception:
                 pass
 
-        # Limpieza profunda de saltos y espacios múltiples
+        # NIVEL 3: Buscar contenedor HTML explícito si el JSON falló
+        if not descripcion_aviso:
+            div_desc = sopa.find(attrs={"data-qa": "posting-description"}) or sopa.find(id=re.compile("description", re.I))
+            if div_desc:
+                for br in div_desc.find_all("br"): br.replace_with("\n")
+                for p in div_desc.find_all("p"): p.insert_after("\n")
+                descripcion_aviso = div_desc.get_text(separator=" ").strip()
+
+        # NIVEL 4: Metadatos SEO (último recurso)
+        if not descripcion_aviso:
+            meta_desc = sopa.find("meta", property="og:description") or sopa.find("meta", attrs={"name": "description"})
+            if meta_desc:
+                descripcion_aviso = meta_desc.get("content", "")
+
+        # Limpieza de HTML basura que pueda haber quedado
         descripcion_limpia = ""
         if descripcion_aviso:
             descripcion_aviso = descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n")
             descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
             descripcion_limpia = re.sub(r'\n+', '\n', descripcion_limpia).strip()
 
-        # --- Integración con la IA para resumir la descripción larga ---
+        # --- IA RESUMEN ---
         resumen_ia = resumir_con_gemini(descripcion_limpia)
         if not resumen_ia and descripcion_limpia:
             lineas = [l for l in descripcion_limpia.split('\n') if l.strip()]
@@ -178,9 +182,15 @@ def extraer_datos_web(url):
             if len(lineas) > 2 or len(resumen_ia) > 150:
                 resumen_ia = resumen_ia[:150] + "..."
 
+        # Si no hay absolutamente nada, lo indicamos
+        if not descripcion_limpia:
+            descripcion_limpia = "No se pudo extraer la descripción de este formato de aviso."
+            if not resumen_ia:
+                resumen_ia = "Sin descripción disponible."
+
         texto_completo = f"{titulo_texto} {descripcion_limpia} {sopa.get_text(separator=' ')}".upper()
         
-        # Extracciones secundarias mediante expresiones regulares
+        # Extracciones regex de emergencia
         if precio == 0:
             precio_match = re.search(r'(?:USD|U\$S|US\$)\s*([\d\.]+)', texto_completo)
             if precio_match: precio = int(precio_match.group(1).replace('.', ''))
