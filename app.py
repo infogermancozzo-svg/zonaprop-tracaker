@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from curl_cffi import requests
-from bs4@@ import BeautifulSoup
+from bs4 import BeautifulSoup
 import json
 import re
 import os
