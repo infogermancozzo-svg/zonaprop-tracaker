@@ -110,6 +110,21 @@ def extraer_datos_web(url):
         barrio = ""
         piso = ""
 
+        # 1. Búsqueda directa en el HTML (la forma más segura de capturar el texto largo completo)
+        div_desc = sopa.find(attrs={"data-qa": "posting-description"})
+        if not div_desc:
+            div_desc = sopa.find(id=re.compile("posting-description", re.I))
+            
+        if div_desc:
+            # Reemplazar etiquetas de salto para mantener el formato legible
+            for br in div_desc.find_all("br"):
+                br.replace_with("\n")
+            for p in div_desc.find_all("p"):
+                p.insert_before("\n")
+                p.insert_after("\n")
+            descripcion_aviso = div_desc.get_text(separator=" ").strip()
+
+        # 2. Búsqueda en los metadatos internos JSON
         next_data_tag = sopa.find("script", id="__NEXT_DATA__")
         if next_data_tag:
             try:
@@ -119,7 +134,8 @@ def extraer_datos_web(url):
                 
                 if props:
                     titulo_texto = props.get("title", titulo_texto)
-                    descripcion_aviso = props.get("description", "")
+                    if not descripcion_aviso:
+                        descripcion_aviso = props.get("description", "")
                     
                     precio_val = props.get("priceOperations", [{}])
                     if precio_val:
@@ -147,22 +163,16 @@ def extraer_datos_web(url):
             except Exception:
                 pass
 
-        if not descripcion_aviso:
-            meta_desc = sopa.find("meta", property="og:description") or sopa.find("meta", attrs={"name": "description"})
-            if meta_desc:
-                descripcion_aviso = meta_desc.get("content", "")
-
+        # Limpieza profunda de saltos y espacios múltiples
+        descripcion_limpia = ""
         if descripcion_aviso:
-            descripcion_aviso = descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n</p>")
+            descripcion_aviso = descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n")
             descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
-            descripcion_limpia = re.sub(r'\n\s*\n', '\n\n', descripcion_limpia).strip()
-        else:
-            descripcion_limpia = ""
+            descripcion_limpia = re.sub(r'\n+', '\n', descripcion_limpia).strip()
 
-        # --- Integración con la IA para resumir ---
+        # --- Integración con la IA para resumir la descripción larga ---
         resumen_ia = resumir_con_gemini(descripcion_limpia)
         if not resumen_ia and descripcion_limpia:
-            # Fallback por si la IA falla o no hay clave
             lineas = [l for l in descripcion_limpia.split('\n') if l.strip()]
             resumen_ia = " \n".join(lineas[:2])
             if len(lineas) > 2 or len(resumen_ia) > 150:
@@ -170,6 +180,7 @@ def extraer_datos_web(url):
 
         texto_completo = f"{titulo_texto} {descripcion_limpia} {sopa.get_text(separator=' ')}".upper()
         
+        # Extracciones secundarias mediante expresiones regulares
         if precio == 0:
             precio_match = re.search(r'(?:USD|U\$S|US\$)\s*([\d\.]+)', texto_completo)
             if precio_match: precio = int(precio_match.group(1).replace('.', ''))
@@ -271,7 +282,6 @@ if not df.empty:
             for idx, row in df.iterrows():
                 link = row["Link"]
                 if link and str(link).startswith("http"):
-                    # Solo actualizamos el precio, no re-generamos la IA para ahorrar tiempo
                     try:
                         headers = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
                         respuesta = requests.get(link, impersonate="chrome110", headers=headers, timeout=12)
@@ -346,18 +356,15 @@ if not df.empty:
                         guardar_datos(df)
                         st.rerun()
 
-                # Acá mostramos el resumen de la IA en un text_area más compacto para editarlo si hace falta
                 nuevas_notas = st.text_area("✨ Resumen (IA) / Notas Personales", value=str(row['Notas Personales']), height=100, key=f"notas_{idx}")
                 if nuevas_notas != str(row['Notas Personales']):
                     df.at[idx, "Notas Personales"] = nuevas_notas
                     guardar_datos(df)
                     st.rerun()
 
-                # Desplegable con el texto crudo y largo de la inmobiliaria
                 with st.expander("📖 Ver descripción original completa"):
                     desc_completa = str(row['Descripción Completa'])
                     if desc_completa.strip():
-                        # Usamos st.write para que el texto original fluya y no se vea atrapado en una cajita
                         st.write(desc_completa)
                     else:
                         st.write("No se encontró texto original.")
