@@ -196,7 +196,6 @@ st.title("🏢 Gestor de Inversiones Inmobiliarias")
 
 df = cargar_datos()
 
-# Uso de st.form para agrupar el input y el botón, y limpiar al enviar
 with st.form("form_agregar", clear_on_submit=True):
     col_input, col_btn = st.columns([4, 1])
     with col_input:
@@ -211,6 +210,11 @@ if btn_agregar:
         with st.spinner("Extrayendo datos del aviso y su descripción..."):
             datos = extraer_datos_web(url_input)
             if datos:
+                # Iniciar el historial al agregar la propiedad
+                if datos["Precio (USD)"] > 0:
+                    hoy = datetime.now().strftime("%d/%m/%Y")
+                    datos["Historial Precio"] = f"{hoy}: USD {datos['Precio (USD)']}"
+                    
                 nuevo_registro = pd.DataFrame([datos])
                 df = pd.concat([df, nuevo_registro], ignore_index=True)
                 guardar_datos(df)
@@ -223,24 +227,31 @@ if btn_agregar:
 
 if not df.empty:
     if st.button("🔄 Actualizar Precios Automáticamente"):
-        with st.spinner("Verificando cambios de precios online..."):
-            hoy = datetime.now().strftime("%Y-%m-%d")
-            cambios_detectados = 0
+        with st.spinner("Verificando precios online y registrando en el historial..."):
+            hoy = datetime.now().strftime("%d/%m/%Y")
+            propiedades_actualizadas = 0
             for idx, row in df.iterrows():
                 link = row["Link"]
-                precio_viejo = row["Precio (USD)"]
                 if link and str(link).startswith("http"):
                     datos_nuevos = extraer_datos_web(link)
                     if datos_nuevos and datos_nuevos["Precio (USD)"] > 0:
                         precio_nuevo = datos_nuevos["Precio (USD)"]
-                        if precio_nuevo != precio_viejo:
-                            cambios_detectados += 1
-                            historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) and row["Historial Precio"] != "" else ""
-                            nuevo_cambio = f"{hoy}: USD {precio_viejo} ➔ USD {precio_nuevo}"
-                            df.at[idx, "Historial Precio"] = f"{historial_previo} | {nuevo_cambio}".strip(" | ")
+                        historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) and str(row["Historial Precio"]).strip() != "" else ""
+                        
+                        registro_hoy = f"{hoy}: USD {precio_nuevo}"
+                        
+                        # Agregamos al historial si este registro exacto (misma fecha y precio) no está ya
+                        if registro_hoy not in historial_previo:
                             df.at[idx, "Precio (USD)"] = precio_nuevo
+                            if historial_previo == "":
+                                df.at[idx, "Historial Precio"] = registro_hoy
+                            else:
+                                df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                            
+                            propiedades_actualizadas += 1
+            
             guardar_datos(df)
-            st.success(f"¡Proceso finalizado! Se actualizaron los precios de {cambios_detectados} inmuebles.")
+            st.success(f"¡Proceso finalizado! Se registraron precios en el historial de {propiedades_actualizadas} inmuebles.")
             st.rerun()
 
 st.subheader("Propiedades Registradas (Editables)")
