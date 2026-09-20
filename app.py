@@ -28,7 +28,6 @@ def cargar_datos():
         else:
             df = pd.DataFrame(columns=columnas_base)
     
-    # Limpieza de columnas viejas si las hubiera
     if "Título" in df.columns: df = df.drop(columns=["Título"])
     if "Titulo" in df.columns: df = df.drop(columns=["Titulo"])
     if "Borrar" in df.columns: df = df.drop(columns=["Borrar"])
@@ -184,10 +183,14 @@ def extraer_datos_web(url):
                     barrio = b.title()
                     break
         
+        # Limpieza rápida de la descripción sacando saltos de línea innecesarios
+        descripcion_limpia = "\n".join([linea for linea in descripcion_aviso.split("\n") if linea.strip() != ""])
+
         return {
             "Barrio": barrio if barrio else "CABA", "Piso": piso, "Ambientes": ambientes,
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
-            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Link": url, "Notas Personales": "", "Historial Precio": ""
+            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Link": url, 
+            "Notas Personales": descripcion_limpia, "Historial Precio": ""
         }
     except Exception:
         return None
@@ -197,7 +200,6 @@ st.title("🏢 Gestor de Inversiones Inmobiliarias")
 
 df = cargar_datos()
 
-# Formulario para agregar propiedades
 with st.container(border=True):
     with st.form("form_agregar", clear_on_submit=True):
         st.subheader("➕ Agregar Inmueble")
@@ -226,7 +228,6 @@ if btn_agregar:
     else:
         st.warning("Por favor, ingresá un link válido.")
 
-# Botón de actualización de precios general
 if not df.empty:
     if st.button("🔄 Verificador de Precios (Actualizar toda la base)", use_container_width=True):
         with st.spinner("Verificando precios online y registrando en el historial..."):
@@ -257,41 +258,53 @@ if not df.empty:
 st.divider()
 st.subheader(f"🏠 Propiedades en Seguimiento ({len(df)})")
 
-# --- GRID DE TARJETAS (2 COLUMNAS EN PC) ---
+# --- GRID DE TARJETAS (2 COLUMNAS) ---
 if not df.empty:
     columnas_grid = st.columns(2)
     
     for idx, row in df.iterrows():
-        # Alterna entre la columna izquierda (0) y derecha (1)
         col_actual = columnas_grid[idx % 2]
         
         with col_actual:
             with st.container(border=True):
-                # Encabezado principal de la tarjeta
-                barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
-                ambientes = int(row['Ambientes']) if row['Ambientes'] else "?"
-                st.markdown(f"### {barrio} • {ambientes} Amb.")
+                # Fila 1: Título grande y botón de eliminar pegado a la derecha
+                col_titulo, col_borrar = st.columns([6, 1])
+                with col_titulo:
+                    barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
+                    ambientes = int(row['Ambientes']) if row['Ambientes'] else "?"
+                    st.markdown(f"### {barrio} • {ambientes} Amb.")
+                with col_borrar:
+                    if st.button("🗑️", key=f"btn_del_{idx}", help="Eliminar definitivamente"):
+                        df = df.drop(idx)
+                        guardar_datos(df)
+                        st.rerun()
                 
-                # Resumen de métricas financieras clave
+                # Fila 2: Métricas estáticas
                 precio = int(row['Precio (USD)'])
                 m2_pond = row['M2 Ponderados']
                 usd_m2 = int(row['USD/m2 Promedio'])
                 
-                st.markdown(f"**💰 Precio:** USD {precio}")
+                st.markdown(f"**💰 Precio:** USD {precio} | **📊 Ratio:** USD {usd_m2} / M²")
                 st.markdown(f"**📐 Superficie:** {m2_pond} M² Pond. (Tot: {int(row['M2 Totales'])} / Cub: {int(row['M2 Cubiertos'])})")
-                st.markdown(f"**📊 Ratio:** USD {usd_m2} / M²")
                 
-                # Mostrar piso actual si está cargado
-                if row['Piso']:
-                    st.markdown(f"**🏢 Piso:** {row['Piso']}")
-                
-                # Notas actuales visibles directo en la tarjeta
-                if row['Notas Personales']:
-                    st.info(f"**Notas:** {row['Notas Personales']}")
+                # Fila 3: Inputs interactivos guardan automáticamente al modificarse
+                col_piso, col_vacio = st.columns([1, 2])
+                with col_piso:
+                    nuevo_piso = st.text_input("🏢 Piso", value=str(row['Piso']), key=f"piso_{idx}")
+                    if nuevo_piso != str(row['Piso']):
+                        df.at[idx, "Piso"] = nuevo_piso
+                        guardar_datos(df)
+                        st.rerun()
 
-                st.link_button("🔗 Ver Publicación", row['Link'], use_container_width=True)
+                nuevas_notas = st.text_area("📝 Descripción / Notas", value=str(row['Notas Personales']), height=130, key=f"notas_{idx}")
+                if nuevas_notas != str(row['Notas Personales']):
+                    df.at[idx, "Notas Personales"] = nuevas_notas
+                    guardar_datos(df)
+                    st.rerun()
+
+                # Fila 4: Link original y Acordeón del historial
+                st.link_button("🔗 Ver Publicación Original", row['Link'], use_container_width=True)
                 
-                # Acordeón 1: Historial de precios
                 with st.expander("📉 Ver historial de precios"):
                     historial = str(row["Historial Precio"])
                     if historial and historial.strip() != "":
@@ -299,25 +312,5 @@ if not df.empty:
                             st.write(f"• {item.strip()}")
                     else:
                         st.write("Sin cambios registrados.")
-                
-                # Acordeón 2: Edición rápida
-                with st.expander("✏️ Editar Piso, Notas o Eliminar"):
-                    with st.form(f"form_edicion_{idx}"):
-                        nuevo_piso = st.text_input("Piso del inmueble:", value=str(row["Piso"]), key=f"piso_{idx}")
-                        nuevas_notas = st.text_area("Notas / Observaciones:", value=str(row["Notas Personales"]), key=f"notas_{idx}")
-                        
-                        st.markdown("---")
-                        borrar = st.checkbox("🗑️ Eliminar definitivamente", key=f"borrar_{idx}")
-                        
-                        if st.form_submit_button("Guardar Cambios", use_container_width=True):
-                            if borrar:
-                                df = df.drop(idx)
-                                guardar_datos(df)
-                                st.rerun()
-                            else:
-                                df.at[idx, "Piso"] = nuevo_piso
-                                df.at[idx, "Notas Personales"] = nuevas_notas
-                                guardar_datos(df)
-                                st.rerun()
 else:
     st.info("No tenés propiedades cargadas. Pegá un link arriba para empezar.")
