@@ -15,7 +15,7 @@ REPO_ID = st.secrets.get("DATASET_REPO", "")
 ARCHIVO_CSV = "Avisos propiedades en venta.csv"
 
 def cargar_datos():
-    columnas_base = ["Título", "Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Historial Precio"]
+    columnas_base = ["Borrar", "Título", "Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Historial Precio"]
     if HF_TOKEN and REPO_ID:
         try:
             ruta_local = hf_hub_download(repo_id=REPO_ID, filename=ARCHIVO_CSV, repo_type="dataset", token=HF_TOKEN)
@@ -31,7 +31,10 @@ def cargar_datos():
     df = df.loc[:, ~df.columns.duplicated()]
     for col in columnas_base:
         if col not in df.columns:
-            df[col] = ""
+            df[col] = False if col == "Borrar" else ""
+            
+    # Asegurar tipo booleano para la columna de borrado
+    df["Borrar"] = df["Borrar"].fillna(False).astype(bool)
             
     for col in ["Barrio", "Piso", "Notas Personales", "Historial Precio", "Título", "Link"]:
         df[col] = df[col].astype(object).fillna("")
@@ -50,7 +53,10 @@ def guardar_datos(df):
         df["M2 Ponderados"] = df["M2 Cubiertos"] + (m2_descubiertos * 0.5)
         df["USD/m2 Promedio"] = df.apply(lambda row: round(row["Precio (USD)"] / row["M2 Ponderados"]) if row["M2 Ponderados"] > 0 and row["Precio (USD)"] > 0 else 0, axis=1)
 
-    df.to_csv(ARCHIVO_CSV, index=False)
+    # No guardamos la columna de borrado en el CSV final
+    df_para_guardar = df.drop(columns=["Borrar"], errors="ignore")
+    df_para_guardar.to_csv(ARCHIVO_CSV, index=False)
+    
     if HF_TOKEN and REPO_ID:
         try:
             api = HfApi()
@@ -167,7 +173,7 @@ def extraer_datos_web(url):
                     break
         
         return {
-            "Título": titulo_texto, "Ambientes": ambientes, "Barrio": barrio if barrio else "CABA", "Piso": piso, 
+            "Borrar": False, "Título": titulo_texto, "Ambientes": ambientes, "Barrio": barrio if barrio else "CABA", "Piso": piso, 
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
             "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Link": url, "Notas Personales": "", "Historial Precio": ""
         }
@@ -230,20 +236,30 @@ if not df.empty:
 
 st.subheader("Propiedades Registradas (Editables)")
 if not df.empty:
-    df_editado = st.data_editor(df, use_container_width=True, key="tabla_props")
-    if st.button("Guardar Cambios en la Tabla"):
-        guardar_datos(df_editado)
-        st.success("¡Cambios y recálculos guardados en tu dataset de Hugging Face!")
-        st.rerun()
-        
-    st.markdown("---")
-    st.subheader("🗑️ Eliminar Propiedad")
-    propiedades_a_borrar = st.multiselect("Seleccioná las propiedades que querés eliminar de la base de datos:", options=df["Título"].tolist())
-    if propiedades_a_borrar:
-        if st.button("Eliminar Seleccionadas", type="secondary"):
-            df = df[~df["Título"].isin(propiedades_a_borrar)]
-            guardar_datos(df)
-            st.success("Propiedades eliminadas correctamente.")
+    # Configuramos la columna de borrado para que aparezca primero como casillas interactivas
+    column_config = {
+        "Borrar": st.column_config.CheckboxColumn(
+            "🗑️ Borrar",
+            help="Marcá la casilla para eliminar esta propiedad",
+            default=False,
+        )
+    }
+    
+    df_editado = st.data_editor(df, column_config=column_config, use_container_width=True, key="tabla_props")
+    
+    col_save, col_del = st.columns(2)
+    with col_save:
+        if st.button("Guardar Cambios en la Tabla", type="primary"):
+            guardar_datos(df_editado)
+            st.success("¡Cambios guardados correctamente!")
+            st.rerun()
+            
+    with col_del:
+        if st.button("🗑️ Eliminar filas marcadas"):
+            # Filtrar fuera las filas donde 'Borrar' esté marcado como True
+            df_filtrado = df_editado[df_editado["Borrar"] == False]
+            guardar_datos(df_filtrado)
+            st.success("¡Propiedades seleccionadas eliminadas con éxito!")
             st.rerun()
 else:
     st.info("No hay propiedades cargadas todavía.")
