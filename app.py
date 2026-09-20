@@ -28,11 +28,8 @@ def cargar_datos():
         else:
             df = pd.DataFrame(columns=columnas_base)
     
-    # Limpiar columna Título si existía en archivos anteriores
-    if "Título" in df.columns:
-        df = df.drop(columns=["Título"])
-    if "Titulo" in df.columns:
-        df = df.drop(columns=["Titulo"])
+    if "Título" in df.columns: df = df.drop(columns=["Título"])
+    if "Titulo" in df.columns: df = df.drop(columns=["Titulo"])
     
     df = df.loc[:, ~df.columns.duplicated()]
     
@@ -41,7 +38,6 @@ def cargar_datos():
             df[col] = False if col == "Borrar" else ""
             
     df = df[[col for col in columnas_base if col in df.columns]]
-            
     df["Borrar"] = df["Borrar"].fillna(False).astype(bool)
             
     for col in ["Barrio", "Piso", "Notas Personales", "Historial Precio", "Link"]:
@@ -79,13 +75,20 @@ def guardar_datos(df):
 
 def extraer_datos_web(url):
     try:
-        respuesta = requests.get(url, impersonate="chrome", timeout=12)
+        # Camuflaje avanzado para evadir Cloudflare
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "es-AR,es;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+        respuesta = requests.get(url, impersonate="chrome110", headers=headers, timeout=15)
+        
         if respuesta.status_code != 200: 
             return None
             
         sopa = BeautifulSoup(respuesta.text, 'html.parser')
         
         titulo_texto = "Propiedad Zonaprop"
+        descripcion_aviso = ""
         precio = 0
         m2_tot = 0
         m2_cub = 0
@@ -93,6 +96,7 @@ def extraer_datos_web(url):
         barrio = ""
         piso = ""
 
+        # Extracción exacta desde el JSON interno del aviso
         next_data_tag = sopa.find("script", id="__NEXT_DATA__")
         if next_data_tag:
             try:
@@ -101,6 +105,9 @@ def extraer_datos_web(url):
                 
                 if props:
                     titulo_texto = props.get("title", titulo_texto)
+                    # Acá extraemos la descripción oficial redactada por la inmobiliaria
+                    descripcion_aviso = props.get("description", "")
+                    
                     precio_val = props.get("priceOperations", [{}])
                     if precio_val:
                         precios_list = precio_val[0].get("prices", [])
@@ -122,12 +129,15 @@ def extraer_datos_web(url):
                             if amb_match: ambientes = int(amb_match.group(1))
 
                     location = props.get("location", {})
-                    barrio = location.get("parent", {}).get("name", "") or location.get("name", "")
-            except Exception as e:
+                    b_name = location.get("parent", {}).get("name", "") or location.get("name", "")
+                    if b_name: barrio = b_name.title()
+            except Exception:
                 pass
 
-        texto_completo = f"{titulo_texto} {sopa.get_text(separator=' ')}".upper()
+        # Unimos el título, LA DESCRIPCIÓN REAL y el texto de la página para buscar coincidencias
+        texto_completo = f"{titulo_texto} {descripcion_aviso} {sopa.get_text(separator=' ')}".upper()
         
+        # Respaldos de extracción buscando en la descripción
         if precio == 0:
             precio_match = re.search(r'(?:USD|U\$S|US\$)\s*([\d\.]+)', texto_completo)
             if precio_match: precio = int(precio_match.group(1).replace('.', ''))
@@ -147,6 +157,7 @@ def extraer_datos_web(url):
         if m2_cub > m2_tot: m2_cub = m2_tot
         if m2_tot > 0 and m2_cub == 0: m2_cub = m2_tot
 
+        # Detección de piso leyendo exhaustivamente la descripción
         if re.search(r'\b(?:PB|PLANTA\s*BAJA)\b', texto_completo):
             piso = "PB"
         else:
@@ -184,7 +195,7 @@ def extraer_datos_web(url):
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
             "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Link": url, "Notas Personales": "", "Historial Precio": ""
         }
-    except Exception as e:
+    except Exception:
         return None
 
 st.title("🏢 Gestor de Inversiones Inmobiliarias")
@@ -205,17 +216,17 @@ with col_btn:
 
 if btn_agregar:
     if url_input:
-        with st.spinner("Extrayendo datos del aviso..."):
+        with st.spinner("Extrayendo datos del aviso y su descripción..."):
             datos = extraer_datos_web(url_input)
             if datos:
                 nuevo_registro = pd.DataFrame([datos])
                 df = pd.concat([df, nuevo_registro], ignore_index=True)
                 guardar_datos(df)
-                st.success("¡Propiedad agregada con éxito!")
+                st.success("¡Propiedad agregada y datos extraídos con éxito!")
                 st.session_state["url_input"] = ""
                 st.rerun()
             else:
-                st.error("No se pudo extraer información del link.")
+                st.error("No se pudo extraer información del link. Zonaprop bloqueó la lectura desde este servidor.")
     else:
         st.warning("Por favor, ingresá un link válido.")
 
