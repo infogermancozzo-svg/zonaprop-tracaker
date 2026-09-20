@@ -15,7 +15,7 @@ REPO_ID = st.secrets.get("DATASET_REPO", "")
 ARCHIVO_CSV = "Avisos propiedades en venta.csv"
 
 def cargar_datos():
-    columnas_base = ["Borrar", "Título", "Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Historial Precio"]
+    columnas_base = ["Borrar", "Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Historial Precio"]
     if HF_TOKEN and REPO_ID:
         try:
             ruta_local = hf_hub_download(repo_id=REPO_ID, filename=ARCHIVO_CSV, repo_type="dataset", token=HF_TOKEN)
@@ -28,8 +28,11 @@ def cargar_datos():
         else:
             df = pd.DataFrame(columns=columnas_base)
     
-    if "Titulo" in df.columns and "Título" not in df.columns:
-        df.rename(columns={"Titulo": "Título"}, inplace=True)
+    # Limpiar columna Título si existía en archivos anteriores
+    if "Título" in df.columns:
+        df = df.drop(columns=["Título"])
+    if "Titulo" in df.columns:
+        df = df.drop(columns=["Titulo"])
     
     df = df.loc[:, ~df.columns.duplicated()]
     
@@ -41,7 +44,7 @@ def cargar_datos():
             
     df["Borrar"] = df["Borrar"].fillna(False).astype(bool)
             
-    for col in ["Barrio", "Piso", "Notas Personales", "Historial Precio", "Título", "Link"]:
+    for col in ["Barrio", "Piso", "Notas Personales", "Historial Precio", "Link"]:
         df[col] = df[col].astype(object).fillna("")
         
     for col in ["Precio (USD)", "USD/m2 Promedio", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados"]:
@@ -177,7 +180,7 @@ def extraer_datos_web(url):
                     break
         
         return {
-            "Borrar": False, "Título": titulo_texto, "Ambientes": ambientes, "Barrio": barrio if barrio else "CABA", "Piso": piso, 
+            "Borrar": False, "Barrio": barrio if barrio else "CABA", "Piso": piso, "Ambientes": ambientes,
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
             "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Link": url, "Notas Personales": "", "Historial Precio": ""
         }
