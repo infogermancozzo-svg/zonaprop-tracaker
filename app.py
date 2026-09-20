@@ -7,15 +7,31 @@ import re
 import os
 from datetime import datetime
 from huggingface_hub import HfApi, hf_hub_download
+import google.generativeai as genai
 
 st.set_page_config(page_title="Gestor de Inversiones Inmobiliarias", page_icon="🏢", layout="wide")
 
 HF_TOKEN = st.secrets.get("HF_TOKEN", "")
 REPO_ID = st.secrets.get("DATASET_REPO", "")
 ARCHIVO_CSV = "Avisos propiedades en venta.csv"
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+def resumir_con_gemini(texto):
+    if not GEMINI_API_KEY or not texto.strip():
+        return ""
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"Actuá como un experto inmobiliario. Resumí la siguiente descripción en máximo 2 o 3 renglones cortos, destacando lo más atractivo (luminosidad, estado, amenities, bajas expensas, ubicación). No uses viñetas, redactalo como un solo párrafo fluido y directo al grano.\n\nDescripción del aviso:\n{texto}"
+        respuesta = model.generate_content(prompt)
+        return respuesta.text.strip()
+    except Exception as e:
+        return ""
 
 def cargar_datos():
-    columnas_base = ["Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Historial Precio"]
+    columnas_base = ["Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Descripción Completa", "Historial Precio"]
     if HF_TOKEN and REPO_ID:
         try:
             ruta_local = hf_hub_download(repo_id=REPO_ID, filename=ARCHIVO_CSV, repo_type="dataset", token=HF_TOKEN)
@@ -40,7 +56,7 @@ def cargar_datos():
             
     df = df[[col for col in columnas_base if col in df.columns]]
             
-    for col in ["Barrio", "Piso", "Notas Personales", "Historial Precio", "Link"]:
+    for col in ["Barrio", "Piso", "Notas Personales", "Descripción Completa", "Historial Precio", "Link"]:
         df[col] = df[col].astype(object).fillna("")
         
     for col in ["Precio (USD)", "USD/m2 Promedio", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados"]:
@@ -98,7 +114,8 @@ def extraer_datos_web(url):
         if next_data_tag:
             try:
                 data_json = json.loads(next_data_tag.string)
-                props = data_json.get("props", {}).get("pageProps", {}).get("posting", {})
+                page_props = data_json.get("props", {}).get("pageProps", {})
+                props = page_props.get("posting", {}) or page_props.get("initialPosting", {})
                 
                 if props:
                     titulo_texto = props.get("title", titulo_texto)
@@ -130,7 +147,28 @@ def extraer_datos_web(url):
             except Exception:
                 pass
 
-        texto_completo = f"{titulo_texto} {descripcion_aviso} {sopa.get_text(separator=' ')}".upper()
+        if not descripcion_aviso:
+            meta_desc = sopa.find("meta", property="og:description") or sopa.find("meta", attrs={"name": "description"})
+            if meta_desc:
+                descripcion_aviso = meta_desc.get("content", "")
+
+        if descripcion_aviso:
+            descripcion_aviso = descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n</p>")
+            descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
+            descripcion_limpia = re.sub(r'\n\s*\n', '\n\n', descripcion_limpia).strip()
+        else:
+            descripcion_limpia = ""
+
+        # --- Integración con la IA para resumir ---
+        resumen_ia = resumir_con_gemini(descripcion_limpia)
+        if not resumen_ia and descripcion_limpia:
+            # Fallback por si la IA falla o no hay clave
+            lineas = [l for l in descripcion_limpia.split('\n') if l.strip()]
+            resumen_ia = " \n".join(lineas[:2])
+            if len(lineas) > 2 or len(resumen_ia) > 150:
+                resumen_ia = resumen_ia[:150] + "..."
+
+        texto_completo = f"{titulo_texto} {descripcion_limpia} {sopa.get_text(separator=' ')}".upper()
         
         if precio == 0:
             precio_match = re.search(r'(?:USD|U\$S|US\$)\s*([\d\.]+)', texto_completo)
@@ -183,14 +221,11 @@ def extraer_datos_web(url):
                     barrio = b.title()
                     break
         
-        # Limpieza rápida de la descripción sacando saltos de línea innecesarios
-        descripcion_limpia = "\n".join([linea for linea in descripcion_aviso.split("\n") if linea.strip() != ""])
-
         return {
             "Barrio": barrio if barrio else "CABA", "Piso": piso, "Ambientes": ambientes,
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
             "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Link": url, 
-            "Notas Personales": descripcion_limpia, "Historial Precio": ""
+            "Notas Personales": resumen_ia, "Descripción Completa": descripcion_limpia, "Historial Precio": ""
         }
     except Exception:
         return None
@@ -211,7 +246,7 @@ with st.container(border=True):
 
 if btn_agregar:
     if url_input:
-        with st.spinner("Extrayendo datos del aviso y su descripción..."):
+        with st.spinner("Extrayendo datos y resumiendo con Inteligencia Artificial..."):
             datos = extraer_datos_web(url_input)
             if datos:
                 if datos["Precio (USD)"] > 0:
@@ -236,20 +271,38 @@ if not df.empty:
             for idx, row in df.iterrows():
                 link = row["Link"]
                 if link and str(link).startswith("http"):
-                    datos_nuevos = extraer_datos_web(link)
-                    if datos_nuevos and datos_nuevos["Precio (USD)"] > 0:
-                        precio_nuevo = datos_nuevos["Precio (USD)"]
-                        historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) and str(row["Historial Precio"]).strip() != "" else ""
-                        
-                        registro_hoy = f"{hoy}: USD {precio_nuevo}"
-                        
-                        if registro_hoy not in historial_previo:
-                            df.at[idx, "Precio (USD)"] = precio_nuevo
-                            if historial_previo == "":
-                                df.at[idx, "Historial Precio"] = registro_hoy
-                            else:
-                                df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
-                            propiedades_actualizadas += 1
+                    # Solo actualizamos el precio, no re-generamos la IA para ahorrar tiempo
+                    try:
+                        headers = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
+                        respuesta = requests.get(link, impersonate="chrome110", headers=headers, timeout=12)
+                        if respuesta.status_code == 200:
+                            sopa = BeautifulSoup(respuesta.text, 'html.parser')
+                            next_data_tag = sopa.find("script", id="__NEXT_DATA__")
+                            precio_nuevo = 0
+                            if next_data_tag:
+                                data_json = json.loads(next_data_tag.string)
+                                page_props = data_json.get("props", {}).get("pageProps", {})
+                                props = page_props.get("posting", {}) or page_props.get("initialPosting", {})
+                                precio_val = props.get("priceOperations", [{}])
+                                if precio_val:
+                                    precios_list = precio_val[0].get("prices", [])
+                                    if precios_list:
+                                        precio_nuevo = int(precios_list[0].get("amount", 0))
+                            
+                            if precio_nuevo > 0:
+                                precio_viejo = int(row["Precio (USD)"])
+                                historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
+                                registro_hoy = f"{hoy}: USD {precio_nuevo}"
+                                
+                                if registro_hoy not in historial_previo:
+                                    df.at[idx, "Precio (USD)"] = precio_nuevo
+                                    if historial_previo == "":
+                                        df.at[idx, "Historial Precio"] = registro_hoy
+                                    else:
+                                        df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                    propiedades_actualizadas += 1
+                    except Exception:
+                        pass
             
             guardar_datos(df)
             st.success(f"¡Proceso finalizado! Se actualizaron los precios de {propiedades_actualizadas} inmuebles.")
@@ -267,7 +320,6 @@ if not df.empty:
         
         with col_actual:
             with st.container(border=True):
-                # Fila 1: Título grande y botón de eliminar pegado a la derecha
                 col_titulo, col_borrar = st.columns([6, 1])
                 with col_titulo:
                     barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
@@ -279,7 +331,6 @@ if not df.empty:
                         guardar_datos(df)
                         st.rerun()
                 
-                # Fila 2: Métricas estáticas
                 precio = int(row['Precio (USD)'])
                 m2_pond = row['M2 Ponderados']
                 usd_m2 = int(row['USD/m2 Promedio'])
@@ -287,7 +338,6 @@ if not df.empty:
                 st.markdown(f"**💰 Precio:** USD {precio} | **📊 Ratio:** USD {usd_m2} / M²")
                 st.markdown(f"**📐 Superficie:** {m2_pond} M² Pond. (Tot: {int(row['M2 Totales'])} / Cub: {int(row['M2 Cubiertos'])})")
                 
-                # Fila 3: Inputs interactivos guardan automáticamente al modificarse
                 col_piso, col_vacio = st.columns([1, 2])
                 with col_piso:
                     nuevo_piso = st.text_input("🏢 Piso", value=str(row['Piso']), key=f"piso_{idx}")
@@ -296,13 +346,22 @@ if not df.empty:
                         guardar_datos(df)
                         st.rerun()
 
-                nuevas_notas = st.text_area("📝 Descripción / Notas", value=str(row['Notas Personales']), height=130, key=f"notas_{idx}")
+                # Acá mostramos el resumen de la IA en un text_area más compacto para editarlo si hace falta
+                nuevas_notas = st.text_area("✨ Resumen (IA) / Notas Personales", value=str(row['Notas Personales']), height=100, key=f"notas_{idx}")
                 if nuevas_notas != str(row['Notas Personales']):
                     df.at[idx, "Notas Personales"] = nuevas_notas
                     guardar_datos(df)
                     st.rerun()
 
-                # Fila 4: Link original y Acordeón del historial
+                # Desplegable con el texto crudo y largo de la inmobiliaria
+                with st.expander("📖 Ver descripción original completa"):
+                    desc_completa = str(row['Descripción Completa'])
+                    if desc_completa.strip():
+                        # Usamos st.write para que el texto original fluya y no se vea atrapado en una cajita
+                        st.write(desc_completa)
+                    else:
+                        st.write("No se encontró texto original.")
+
                 st.link_button("🔗 Ver Publicación Original", row['Link'], use_container_width=True)
                 
                 with st.expander("📉 Ver historial de precios"):
