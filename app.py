@@ -28,19 +28,15 @@ def cargar_datos():
         else:
             df = pd.DataFrame(columns=columnas_base)
     
-    # Unificar por si quedó alguna columna vieja sin tilde ("Titulo")
     if "Titulo" in df.columns and "Título" not in df.columns:
         df.rename(columns={"Titulo": "Título"}, inplace=True)
     
-    # Eliminar cualquier columna duplicada exacta
     df = df.loc[:, ~df.columns.duplicated()]
     
-    # Asegurar que existan todas las columnas base
     for col in columnas_base:
         if col not in df.columns:
             df[col] = False if col == "Borrar" else ""
             
-    # Forzar el orden exacto para que Título aparezca una única vez
     df = df[[col for col in columnas_base if col in df.columns]]
             
     df["Borrar"] = df["Borrar"].fillna(False).astype(bool)
@@ -249,6 +245,11 @@ if not df.empty:
             "🗑️ Borrar",
             help="Marcá la casilla para eliminar esta propiedad",
             default=False,
+        ),
+        "Link": st.column_config.LinkColumn(
+            "🔗 Publicación",
+            help="Hacer clic para abrir el aviso original",
+            display_text="Ver aviso"
         )
     }
     
