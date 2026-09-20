@@ -75,7 +75,6 @@ def guardar_datos(df):
 
 def extraer_datos_web(url):
     try:
-        # Camuflaje avanzado para evadir Cloudflare
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "es-AR,es;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -96,7 +95,6 @@ def extraer_datos_web(url):
         barrio = ""
         piso = ""
 
-        # Extracción exacta desde el JSON interno del aviso
         next_data_tag = sopa.find("script", id="__NEXT_DATA__")
         if next_data_tag:
             try:
@@ -105,7 +103,6 @@ def extraer_datos_web(url):
                 
                 if props:
                     titulo_texto = props.get("title", titulo_texto)
-                    # Acá extraemos la descripción oficial redactada por la inmobiliaria
                     descripcion_aviso = props.get("description", "")
                     
                     precio_val = props.get("priceOperations", [{}])
@@ -134,10 +131,8 @@ def extraer_datos_web(url):
             except Exception:
                 pass
 
-        # Unimos el título, LA DESCRIPCIÓN REAL y el texto de la página para buscar coincidencias
         texto_completo = f"{titulo_texto} {descripcion_aviso} {sopa.get_text(separator=' ')}".upper()
         
-        # Respaldos de extracción buscando en la descripción
         if precio == 0:
             precio_match = re.search(r'(?:USD|U\$S|US\$)\s*([\d\.]+)', texto_completo)
             if precio_match: precio = int(precio_match.group(1).replace('.', ''))
@@ -157,7 +152,6 @@ def extraer_datos_web(url):
         if m2_cub > m2_tot: m2_cub = m2_tot
         if m2_tot > 0 and m2_cub == 0: m2_cub = m2_tot
 
-        # Detección de piso leyendo exhaustivamente la descripción
         if re.search(r'\b(?:PB|PLANTA\s*BAJA)\b', texto_completo):
             piso = "PB"
         else:
@@ -202,17 +196,15 @@ st.title("🏢 Gestor de Inversiones Inmobiliarias")
 
 df = cargar_datos()
 
-if "url_input" not in st.session_state:
-    st.session_state["url_input"] = ""
-
-col_input, col_btn = st.columns([4, 1])
-with col_input:
-    url_input = st.text_input("Link de Zonaprop", placeholder="Pegá el link acá...", key="url_input")
-
-with col_btn:
-    st.write("") 
-    st.write("")
-    btn_agregar = st.button("Agregar Propiedad", type="primary")
+# Uso de st.form para agrupar el input y el botón, y limpiar al enviar
+with st.form("form_agregar", clear_on_submit=True):
+    col_input, col_btn = st.columns([4, 1])
+    with col_input:
+        url_input = st.text_input("Link de Zonaprop", placeholder="Pegá el link acá...")
+    with col_btn:
+        st.write("") 
+        st.write("")
+        btn_agregar = st.form_submit_button("Agregar Propiedad", type="primary")
 
 if btn_agregar:
     if url_input:
@@ -223,7 +215,6 @@ if btn_agregar:
                 df = pd.concat([df, nuevo_registro], ignore_index=True)
                 guardar_datos(df)
                 st.success("¡Propiedad agregada y datos extraídos con éxito!")
-                st.session_state["url_input"] = ""
                 st.rerun()
             else:
                 st.error("No se pudo extraer información del link. Zonaprop bloqueó la lectura desde este servidor.")
