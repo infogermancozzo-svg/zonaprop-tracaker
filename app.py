@@ -41,8 +41,9 @@ Instrucciones para "antiguedad":
 - Si no dice nada, dejalo vacío: ""
 
 Instrucciones para "piso":
-- Buscá en qué piso está el departamento (ej. "primer piso", "piso 3", "planta baja", "PB") y poné el valor (ej. "1", "3", "PB").
-- Si NO menciona el piso en ninguna parte, poné estrictamente: "no menciona"
+- Buscá explícitamente en qué piso se encuentra ubicado EL DEPARTAMENTO (ej. "primer piso", "piso 3", "planta baja").
+- PROHIBIDO adivinar o deducir el piso basándote en la cantidad total de pisos del edificio (ej. si dice "edificio de 4 pisos", NO asumas que es el piso 4).
+- Si el texto NO indica claramente en qué piso está la unidad, poné estrictamente: "no menciona"
 
 Instrucciones para "resumen":
 - 2 o 3 renglones fluidos sobre las características físicas y ventajas (todo en ESPAÑOL).
@@ -115,7 +116,7 @@ def cargar_datos():
         if col in df.columns: 
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
-    # CRÍTICO: Resetea el índice para evitar que se actualicen las filas equivocadas
+    # FUNDAMENTAL: Se alinea el índice correctamente al cargar para que coincidan fila e índice
     df.reset_index(drop=True, inplace=True)
     return df
 
@@ -265,27 +266,19 @@ def extraer_datos_web(url):
             elif re.search(r'\bORIENTACI[OÓ]N ESTE\b|\bAL ESTE\b', texto_completo): orientacion = "E"
             elif re.search(r'\bORIENTACI[OÓ]N OESTE\b|\bAL OESTE\b', texto_completo): orientacion = "O"
 
-        if not antiguedad_web:
-            if re.search(r'\bA ESTRENAR\b', texto_completo): antiguedad_web = "A estrenar"
-            elif re.search(r'\b(?:EN POZO|POZO)\b', texto_completo): antiguedad_web = "Pozo"
-            elif re.search(r'\b(?:EN CONSTRUCCI[OÓ]N)\b', texto_completo): antiguedad_web = "En construcción"
-            else:
-                a_match = re.search(r'(\d+)\s*AÑO', texto_completo)
-                if a_match: antiguedad_web = f"{a_match.group(1)} años"
-
-        # Búsqueda inicial de piso por expresiones regulares
+        # Búsqueda inicial de piso por regex (SE AGREGA \b PARA EVITAR QUE LEA "PISOS" EN PLURAL)
         if re.search(r'\b(?:PB|PLANTA\s*BAJA)\b', texto_completo):
             piso = "PB"
         else:
-            piso_match = re.search(r'PISO\s*(\d+)', texto_completo)
+            piso_match = re.search(r'\bPISO\s*(\d+)\b', texto_completo)
             if not piso_match: 
-                piso_match = re.search(r'(\d+)\s*(?:ER|RO|TO|MO|VO|NO|°|ER\.)?\s*PISO', texto_completo)
+                piso_match = re.search(r'\b(\d+)\s*(?:ER|RO|TO|MO|VO|NO|°|ER\.)?\s*PISO\b', texto_completo)
             if piso_match: 
                 piso = str(piso_match.group(1))
             else:
                 mapa_pisos = {"PRIMER": "1", "SEGUNDO": "2", "TERCER": "3", "CUARTO": "4", "QUINTO": "5", "SEXTO": "6", "SEPTIMO": "7", "SÉPTIMO": "7", "OCTAVO": "8", "NOVENO": "9", "DECIMO": "10", "DÉCIMO": "10"}
                 for k, v in mapa_pisos.items():
-                    if f"{k} PISO" in texto_completo or f"{k}°" in texto_completo:
+                    if f"{k} PISO" in texto_completo and f"{k} PISOS" not in texto_completo:
                         piso = v
                         break
 
@@ -298,7 +291,7 @@ def extraer_datos_web(url):
             piso = ia_data.get("piso", "no menciona")
         if not piso or piso.strip() == "":
             piso = "no menciona"
-        
+            
         antiguedad_final = antiguedad_web if antiguedad_web else ia_data["antiguedad"]
         if not antiguedad_final: 
             antiguedad_final = "Contactar agente"
@@ -393,9 +386,8 @@ if not df.empty:
             hoy = datetime.now().strftime("%d/%m/%Y")
             propiedades_actualizadas = 0
             
-            # Bucle global por índice real
-            for i in range(len(df)):
-                row = df.iloc[i]
+            # Bucle iterativo con la llave exacta de fila
+            for idx, row in df.iterrows():
                 link = row["Link"]
                 if link and str(link).startswith("http"):
                     try:
@@ -421,11 +413,11 @@ if not df.empty:
                                 historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
                                 registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
                                 
-                                df.at[i, "Precio (USD)"] = precio_nuevo
+                                df.at[idx, "Precio (USD)"] = precio_nuevo
                                 if historial_previo == "":
-                                    df.at[i, "Historial Precio"] = registro_hoy
+                                    df.at[idx, "Historial Precio"] = registro_hoy
                                 else:
-                                    df.at[i, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                    df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
                                 propiedades_actualizadas += 1
                     except Exception:
                         pass
@@ -440,10 +432,9 @@ st.subheader(f"🏠 Propiedades en Seguimiento ({len(df)})")
 if not df.empty:
     columnas_grid = st.columns(3)
     
-    # NUEVA LÓGICA DE BUCLE: Usar rango estricto para evitar bugs de actualización cruzada
-    for i in range(len(df)):
-        row = df.iloc[i]
-        col_actual = columnas_grid[i % 3]
+    # NUEVA LÓGICA DE BUCLE: Uso iterrows() para no cruzar nunca las actualizaciones
+    for idx, row in df.iterrows():
+        col_actual = columnas_grid[idx % 3]
         
         with col_actual:
             with st.container(border=True):
@@ -461,13 +452,12 @@ if not df.empty:
                 with c_titulo:
                     st.markdown(f"<h3 style='margin:0; padding:0; color:#1E88E5;'>{format_precio(precio_actual)}</h3>", unsafe_allow_html=True)
                 with c_borrar:
-                    # El índice real `i` garantiza que siempre borre el correcto
-                    if st.button("🗑️", key=f"btn_del_{i}", help="Eliminar"):
-                        df = df.drop(i).reset_index(drop=True)
+                    if st.button("🗑️", key=f"btn_del_{idx}", help="Eliminar"):
+                        df = df.drop(idx).reset_index(drop=True)
                         guardar_datos(df)
                         st.rerun()
                 
-                # --- PROCESAMIENTO DEL PISO PARA EL TÍTULO ---
+                # --- PISO ARRIBA EN EL TÍTULO ---
                 piso_val = str(row.get('Piso', '')).strip()
                 if piso_val.lower() == 'nan' or piso_val == '': piso_val = 'no menciona'
                 elif piso_val.endswith('.0'): piso_val = piso_val[:-2]
@@ -477,7 +467,6 @@ if not df.empty:
                 ambientes = int(row['Ambientes']) if pd.notna(row['Ambientes']) and row['Ambientes'] != 0 else "?"
                 badge = "<span style='background:#ffebee; color:#c62828; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold; margin-left:6px; vertical-align:middle;'>🔥 BAJÓ</span>" if (0 < precio_actual < primer_precio) else ""
                 
-                # Título integrado con el Piso como solicitaste
                 st.markdown(f"<div style='margin-top:4px; margin-bottom:8px;'><b>{barrio}</b> • {ambientes} Amb. • Piso: {piso_val}{badge}</div>", unsafe_allow_html=True)
                 
                 m2_tot = int(row['M2 Totales'])
@@ -508,24 +497,23 @@ if not df.empty:
                 antig_val = str(row.get('Antigüedad', 'Contactar agente'))
                 if antig_val == "": antig_val = "Contactar agente"
                 
-                # Se mantiene la caja de edición por si la IA se equivoca o el usuario quiere corregirlo manualmente
                 col_piso, col_ant = st.columns(2)
                 with col_piso:
-                    nuevo_piso = st.text_input("Piso", value=piso_val, key=f"piso_{i}", label_visibility="collapsed", placeholder="🏢 Piso")
+                    nuevo_piso = st.text_input("Piso", value=piso_val, key=f"piso_{idx}", label_visibility="collapsed", placeholder="🏢 Piso")
                     if nuevo_piso != piso_val:
-                        df.at[i, "Piso"] = nuevo_piso
+                        df.at[idx, "Piso"] = nuevo_piso
                         guardar_datos(df)
                         st.rerun()
                 with col_ant:
-                    nuevo_ant = st.text_input("Estado", value=antig_val, key=f"ant_{i}", label_visibility="collapsed", placeholder="🏗️ Antigüedad")
+                    nuevo_ant = st.text_input("Estado", value=antig_val, key=f"ant_{idx}", label_visibility="collapsed", placeholder="🏗️ Antigüedad")
                     if nuevo_ant != antig_val:
-                        df.at[i, "Antigüedad"] = nuevo_ant
+                        df.at[idx, "Antigüedad"] = nuevo_ant
                         guardar_datos(df)
                         st.rerun()
 
-                nuevas_notas = st.text_area("Resumen", value=str(row['Notas Personales']), height=68, key=f"notas_{i}", label_visibility="collapsed", placeholder="✨ Resumen IA / Notas")
+                nuevas_notas = st.text_area("Resumen", value=str(row['Notas Personales']), height=68, key=f"notas_{idx}", label_visibility="collapsed", placeholder="✨ Resumen IA / Notas")
                 if nuevas_notas != str(row['Notas Personales']):
-                    df.at[i, "Notas Personales"] = nuevas_notas
+                    df.at[idx, "Notas Personales"] = nuevas_notas
                     guardar_datos(df)
                     st.rerun()
 
@@ -549,26 +537,26 @@ if not df.empty:
                     else:
                         st.write("No se encontró texto original.")
 
-                # BOTÓN INDIVIDUAL (Ahora usa siempre el índice 'i' asegurando precisión absoluta)
+                # BOTÓN INDIVIDUAL (Ahora usa el idx de Pandas garantizado)
                 col_links, col_acts = st.columns(2)
                 with col_links:
                     st.link_button("🔗 Ver Aviso", row['Link'], use_container_width=True)
                 with col_acts:
-                    if st.button("🔄 Actualizar", key=f"btn_act_{i}", use_container_width=True):
+                    if st.button("🔄 Actualizar", key=f"btn_act_{idx}", use_container_width=True):
                         with st.spinner("Descargando..."):
                             link_actual = row["Link"]
                             if link_actual and str(link_actual).startswith("http"):
                                 datos_frescos = extraer_datos_web(link_actual)
                                 if datos_frescos:
-                                    df.at[i, "Descripción Completa"] = datos_frescos["Descripción Completa"]
-                                    df.at[i, "Notas Personales"] = datos_frescos["Notas Personales"]
-                                    df.at[i, "Antigüedad"] = datos_frescos["Antigüedad"]
-                                    df.at[i, "Piso"] = datos_frescos["Piso"]
-                                    df.at[i, "Baños"] = datos_frescos["Baños"]
-                                    df.at[i, "Toilettes"] = datos_frescos["Toilettes"]
-                                    df.at[i, "Disposición"] = datos_frescos["Disposición"]
-                                    df.at[i, "Orientación"] = datos_frescos["Orientación"]
-                                    df.at[i, "Balcón"] = datos_frescos["Balcón"]
+                                    df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
+                                    df.at[idx, "Notas Personales"] = datos_frescos["Notas Personales"]
+                                    df.at[idx, "Antigüedad"] = datos_frescos["Antigüedad"]
+                                    df.at[idx, "Piso"] = datos_frescos["Piso"]
+                                    df.at[idx, "Baños"] = datos_frescos["Baños"]
+                                    df.at[idx, "Toilettes"] = datos_frescos["Toilettes"]
+                                    df.at[idx, "Disposición"] = datos_frescos["Disposición"]
+                                    df.at[idx, "Orientación"] = datos_frescos["Orientación"]
+                                    df.at[idx, "Balcón"] = datos_frescos["Balcón"]
                                     
                                     precio_nuevo = datos_frescos["Precio (USD)"]
                                     precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
@@ -578,11 +566,11 @@ if not df.empty:
                                         historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
                                         registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
                                         
-                                        df.at[i, "Precio (USD)"] = precio_nuevo
+                                        df.at[idx, "Precio (USD)"] = precio_nuevo
                                         if historial_previo == "":
-                                            df.at[i, "Historial Precio"] = registro_hoy
+                                            df.at[idx, "Historial Precio"] = registro_hoy
                                         else:
-                                            df.at[i, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                            df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
                                     
                                     guardar_datos(df)
                                     st.rerun()
