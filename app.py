@@ -27,7 +27,7 @@ def resumir_con_gemini(texto):
         REGLAS ESTRICTAS:
         1. Enfocate ÚNICAMENTE en las características físicas y ventajas del inmueble (distribución, luminosidad, estado de conservación, amenities, ubicación).
         2. IGNORÁ por completo "disclosures", textos legales, leyes de accesibilidad (ej. Ley 5115), matrículas de corredores (CUCICBA, CPI), avisos de medidas aproximadas, horarios de atención o información de la inmobiliaria.
-        3. Redactá un solo párrafo fluido, directo al grano y sin usar viñetas.
+        3. Redactá un solo párrafo fluido, directo al grano y sin usar viñetas. Si el inmueble no esta terminado, poner en color Rojo Fecha de entrega al final.
         
         Descripción original del aviso:
         {texto}"""
