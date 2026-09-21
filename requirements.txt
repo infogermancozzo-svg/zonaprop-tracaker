@@ -1,6 +1,7 @@
+Plaintext
 streamlit
 pandas
 curl_cffi
 beautifulsoup4
 huggingface_hub
-google-genai
+groq
