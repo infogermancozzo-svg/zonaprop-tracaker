@@ -18,19 +18,29 @@ GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "")
 
 def resumir_con_ia(texto):
     if not GROQ_API_KEY or not texto.strip():
-        return ""
+        return {"antiguedad": "Contactar agente", "resumen": ""}
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un experto tasador inmobiliario. Tu tarea es leer TODA la descripción del aviso y crear un resumen de máximo 2 o 3 renglones. 
-        
-        REGLAS ESTRICTAS:
-        1. Enfocate ÚNICAMENTE en las características físicas y ventajas del inmueble (distribución, luminosidad, estado de conservación, amenities, ubicación).
-        2. IGNORÁ por completo "disclosures", textos legales, leyes de accesibilidad (ej. Ley 5115), matrículas de corredores (CUCICBA, CPI), avisos de medidas aproximadas, horarios de atención o información de la inmobiliaria.
-        3. Redactá un solo párrafo fluido, directo al grano y sin usar viñetas.
-        
-        Descripción original del aviso:
-        {texto}"""
+        prompt = f"""Actuá como un experto tasador inmobiliario. Analizá la siguiente descripción de un aviso y extraé la información solicitada respetando EXACTAMENTE esta estructura:
+
+ANTIGUEDAD: [escribí acá una de las opciones]
+RESUMEN: [escribí acá tu resumen]
+
+Opciones obligatorias para ANTIGUEDAD (elegí solo una):
+- Pozo
+- En construcción (termina en [Mes/Año])
+- Terminado
+- [X] años
+- Contactar agente (si no hay ninguna pista sobre el estado o antigüedad)
+
+Reglas para RESUMEN:
+- Redactá un solo párrafo fluido, directo al grano y sin usar viñetas. Máximo 2 o 3 renglones.
+- Enfocate ÚNICAMENTE en las características físicas y ventajas (luminosidad, amenities, distribución, estado, ubicación).
+- IGNORÁ por completo "disclosures", textos legales, Ley 5115, matrículas de corredores (CUCICBA/CPI), avisos de medidas aproximadas, horarios o información de la inmobiliaria.
+
+Descripción original del aviso:
+{texto}"""
         
         chat_completion = client.chat.completions.create(
             messages=[
@@ -39,14 +49,31 @@ def resumir_con_ia(texto):
                     "content": prompt,
                 }
             ],
-            model="openai/gpt-oss-20b",
+            model="mixtral-8x7b-32768",
         )
-        return chat_completion.choices[0].message.content.strip()
+        
+        respuesta = chat_completion.choices[0].message.content.strip()
+        
+        # Procesar la respuesta de la IA
+        antiguedad = "Contactar agente"
+        resumen = respuesta
+        
+        match_antiguedad = re.search(r'ANTIG[UÜ]EDAD:\s*(.*?)(?=\n|RESUMEN:|$)', respuesta, re.IGNORECASE | re.DOTALL)
+        match_resumen = re.search(r'RESUMEN:\s*(.*)', respuesta, re.IGNORECASE | re.DOTALL)
+        
+        if match_antiguedad:
+            antiguedad = match_antiguedad.group(1).strip()
+        if match_resumen:
+            resumen = match_resumen.group(1).strip()
+            
+        return {"antiguedad": antiguedad, "resumen": resumen}
+        
     except Exception as e:
-        return f"⚠️ [Error Groq]: actualizar info en unos minutos. ({str(e)})"
+        return {"antiguedad": "Contactar agente", "resumen": f"⚠️ [Error Groq]: actualizar info en unos minutos. ({str(e)})"}
 
 def cargar_datos():
-    columnas_base = ["Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Descripción Completa", "Historial Precio"]
+    # Se agregó la columna "Antigüedad" a la base
+    columnas_base = ["Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Antigüedad", "Link", "Notas Personales", "Descripción Completa", "Historial Precio"]
     if HF_TOKEN and REPO_ID:
         try:
             ruta_local = hf_hub_download(repo_id=REPO_ID, filename=ARCHIVO_CSV, repo_type="dataset", token=HF_TOKEN)
@@ -71,7 +98,7 @@ def cargar_datos():
             
     df = df[[col for col in columnas_base if col in df.columns]]
             
-    for col in ["Barrio", "Piso", "Notas Personales", "Descripción Completa", "Historial Precio", "Link"]:
+    for col in ["Barrio", "Piso", "Antigüedad", "Notas Personales", "Descripción Completa", "Historial Precio", "Link"]:
         df[col] = df[col].astype(object).fillna("")
         
     for col in ["Precio (USD)", "USD/m2 Promedio", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados"]:
@@ -184,19 +211,20 @@ def extraer_datos_web(url):
             descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
             descripcion_limpia = re.sub(r'\n+', '\n', descripcion_limpia).strip()
 
-        # Generar resumen con la IA de Groq
-        resumen_ia = resumir_con_ia(descripcion_limpia)
+        # LLAMADA A LA IA (Ahora devuelve un diccionario)
+        ia_data = resumir_con_ia(descripcion_limpia)
+        resumen_ia = ia_data["resumen"]
+        antiguedad_ia = ia_data["antiguedad"]
         
         if not resumen_ia and descripcion_limpia:
             lineas = [l for l in descripcion_limpia.split('\n') if l.strip()]
             resumen_ia = "[IA no disponible] " + " \n".join(lineas[:2])
-            if len(lineas) > 2 or len(resumen_ia) > 150:
-                resumen_ia = resumen_ia[:150] + "..."
+            antiguedad_ia = "Contactar agente"
 
         if not descripcion_limpia:
             descripcion_limpia = "No se pudo extraer la descripción de este formato de aviso."
-            if not resumen_ia:
-                resumen_ia = "Sin descripción disponible."
+            resumen_ia = "Sin descripción disponible."
+            antiguedad_ia = "Contactar agente"
 
         texto_completo = f"{titulo_texto} {descripcion_limpia} {sopa.get_text(separator=' ')}".upper()
         
@@ -254,8 +282,8 @@ def extraer_datos_web(url):
         return {
             "Barrio": barrio if barrio else "CABA", "Piso": piso, "Ambientes": ambientes,
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
-            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Link": url, 
-            "Notas Personales": resumen_ia, "Descripción Completa": descripcion_limpia, "Historial Precio": ""
+            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Antigüedad": antiguedad_ia, 
+            "Link": url, "Notas Personales": resumen_ia, "Descripción Completa": descripcion_limpia, "Historial Precio": ""
         }
     except Exception:
         return None
@@ -276,7 +304,7 @@ with st.container(border=True):
 
 if btn_agregar:
     if url_input:
-        with st.spinner("Extrayendo datos y resumiendo con Inteligencia Artificial..."):
+        with st.spinner("Extrayendo datos y analizando con Inteligencia Artificial..."):
             datos = extraer_datos_web(url_input)
             if datos:
                 if datos["Precio (USD)"] > 0:
@@ -319,7 +347,6 @@ if not df.empty:
                                         precio_nuevo = int(precios_list[0].get("amount", 0))
                             
                             if precio_nuevo > 0:
-                                precio_viejo = int(row["Precio (USD)"])
                                 historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
                                 registro_hoy = f"{hoy}: USD {precio_nuevo}"
                                 
@@ -360,17 +387,36 @@ if not df.empty:
                         st.rerun()
                 
                 precio = int(row['Precio (USD)'])
-                m2_pond = row['M2 Ponderados']
+                m2_tot = int(row['M2 Totales'])
+                m2_cub = int(row['M2 Cubiertos'])
+                m2_desc = m2_tot - m2_cub if m2_tot > m2_cub else 0
                 usd_m2 = int(row['USD/m2 Promedio'])
                 
-                st.markdown(f"**💰 Precio:** USD {precio} | **📊 Ratio:** USD {usd_m2} / M²")
-                st.markdown(f"**📐 Superficie:** {m2_pond} M² Pond. (Tot: {int(row['M2 Totales'])} / Cub: {int(row['M2 Cubiertos'])})")
+                # Formateo visual del diseño
+                st.markdown(f"**💰 Precio:** USD {precio} | **📊 Precio Ponderado:** USD {usd_m2} / m²")
+                st.markdown(f"**📐 Superficie:** {m2_tot} m² Totales | {m2_cub} m² Cub. | {m2_desc} m² Desc.")
                 
-                col_piso, col_vacio = st.columns([1, 2])
+                # Procesamiento y limpieza del campo "Piso"
+                piso_val = str(row['Piso']).strip()
+                if piso_val.endswith('.0'): 
+                    piso_val = piso_val[:-2]
+                if piso_val == '0': 
+                    piso_val = 'PB'
+                
+                antig_val = str(row.get('Antigüedad', 'Contactar agente'))
+                if antig_val == "": antig_val = "Contactar agente"
+                
+                col_piso, col_ant = st.columns([1, 2])
                 with col_piso:
-                    nuevo_piso = st.text_input("🏢 Piso", value=str(row['Piso']), key=f"piso_{idx}")
-                    if nuevo_piso != str(row['Piso']):
+                    nuevo_piso = st.text_input("🏢 Piso", value=piso_val, key=f"piso_{idx}")
+                    if nuevo_piso != piso_val:
                         df.at[idx, "Piso"] = nuevo_piso
+                        guardar_datos(df)
+                        st.rerun()
+                with col_ant:
+                    nuevo_ant = st.text_input("🏗️ Estado / Antigüedad", value=antig_val, key=f"ant_{idx}")
+                    if nuevo_ant != antig_val:
+                        df.at[idx, "Antigüedad"] = nuevo_ant
                         guardar_datos(df)
                         st.rerun()
 
@@ -399,6 +445,7 @@ if not df.empty:
                                 if datos_frescos:
                                     df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
                                     df.at[idx, "Notas Personales"] = datos_frescos["Notas Personales"]
+                                    df.at[idx, "Antigüedad"] = datos_frescos["Antigüedad"]
                                     
                                     precio_nuevo = datos_frescos["Precio (USD)"]
                                     if precio_nuevo > 0 and precio_nuevo != row["Precio (USD)"]:
