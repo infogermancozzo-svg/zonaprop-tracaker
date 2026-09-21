@@ -3,4 +3,4 @@ pandas
 curl_cffi
 beautifulsoup4
 huggingface_hub
-google-generativeai
+google-genai
