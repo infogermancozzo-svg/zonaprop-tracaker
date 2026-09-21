@@ -29,7 +29,7 @@ def resumir_con_ia(texto):
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un tasador inmobiliario. Analizá el texto y devolvé ÚNICAMENTE un objeto JSON válido con las claves "antiguedad", "piso" y "resumen". No agregues texto antes ni después del JSON.
+        prompt = f"""Actuá como un tasador inmobiliario estricto. Analizá el texto y devolvé ÚNICAMENTE un objeto JSON válido con las claves "antiguedad", "piso" y "resumen". No agregues texto antes ni después del JSON.
 
 REGLA VITAL: DEBES RESPONDER ESTRICTAMENTE EN ESPAÑOL (CASTELLANO). NO USES INGLÉS.
 
@@ -40,11 +40,10 @@ Instrucciones para "antiguedad":
 - Si dice en construcción o da fecha, poné: "En construcción"
 - Si NO dice absolutamente nada sobre los años o el estado, poné estrictamente: "no menciona"
 
-Instrucciones para "piso":
-- Buscá explícitamente en qué piso se encuentra ubicado EL DEPARTAMENTO (ej. "primer piso", "piso 3", "planta baja").
-- CUIDADO: No confundas el piso del departamento con el piso de los amenities (ej. si dice "SUM en piso 4", NO es el piso 4).
-- PROHIBIDO adivinar o deducir el piso basándote en la cantidad total de pisos del edificio.
-- Si el texto NO indica claramente en qué piso está la unidad, poné estrictamente: "no menciona"
+Instrucciones para "piso" (MUY IMPORTANTE):
+- Identificá en qué piso exacto está EL DEPARTAMENTO en venta (ej. "en el 6° piso", "piso 6", "unidad al frente en 2do piso").
+- PROHIBIDO absoluto: No confundas la cantidad total de pisos del edificio (ej. "edificio de 8 pisos", "torre de 10 pisos", "planta baja y 4 pisos") con el piso de la unidad. 
+- Si el texto solo menciona cuántos pisos tiene el edificio entero pero NO especifica en qué piso se ubica este departamento, debés responder estrictamente: "no menciona".
 
 Instrucciones para "resumen":
 - 2 o 3 renglones fluidos sobre las características físicas y ventajas (todo en ESPAÑOL).
@@ -266,29 +265,13 @@ def extraer_datos_web(url):
             elif re.search(r'\bORIENTACI[OÓ]N ESTE\b|\bAL ESTE\b', texto_completo): orientacion = "E"
             elif re.search(r'\bORIENTACI[OÓ]N OESTE\b|\bAL OESTE\b', texto_completo): orientacion = "O"
 
+        # LLAMADA A LA IA (ÚNICA FUENTE DE VERDAD PARA EL PISO)
         ia_data = resumir_con_ia(descripcion_limpia)
         resumen_ia = ia_data["resumen"]
-        piso_ia = str(ia_data.get("piso", "no menciona")).strip()
+        piso = str(ia_data.get("piso", "no menciona")).strip()
         
-        if piso_ia.lower() != "no menciona" and piso_ia != "":
-            piso = piso_ia
-        else:
-            if re.search(r'\b(?:PB|PLANTA\s*BAJA)\b', texto_completo):
-                piso = "PB"
-            else:
-                piso_match = re.search(r'\bPISO\s*(\d+)\b', texto_completo)
-                if not piso_match: 
-                    piso_match = re.search(r'\b(\d+)\s*(?:ER|RO|TO|MO|VO|NO|°|ER\.)?\s*PISO\b', texto_completo)
-                if piso_match: 
-                    piso = str(piso_match.group(1))
-                else:
-                    mapa_pisos = {"PRIMER": "1", "SEGUNDO": "2", "TERCER": "3", "CUARTO": "4", "QUINTO": "5", "SEXTO": "6", "SEPTIMO": "7", "SÉPTIMO": "7", "OCTAVO": "8", "NOVENO": "9", "DECIMO": "10", "DÉCIMO": "10"}
-                    for k, v in mapa_pisos.items():
-                        if f"{k} PISO" in texto_completo and f"{k} PISOS" not in texto_completo:
-                            piso = v
-                            break
-            if not piso:
-                piso = "no menciona"
+        if not piso or piso == "":
+            piso = "no menciona"
 
         antiguedad_final = antiguedad_web if antiguedad_web else ia_data.get("antiguedad", "no menciona")
         if not antiguedad_final or antiguedad_final.strip() == "": 
@@ -550,13 +533,10 @@ if not df.empty:
                         with st.spinner("Descargando..."):
                             link_actual = row["Link"]
                             if link_actual and str(link_actual).startswith("http"):
-                                datos_frescos = extraer_datos_web(link_actual)
+                                datos_frescos = extraer_dev_web = extraer_datos_web(link_actual)
                                 if datos_frescos:
                                     df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
                                     df.at[idx, "Resumen IA"] = datos_frescos["Resumen IA"]
-                                    
-                                    # CAMBIO CLAVE (Opción 1): Protegemos el Piso y la Antigüedad actual 
-                                    # para que la actualización NO sobrescriba correcciones manuales del usuario.
                                     
                                     precio_nuevo = datos_frescos["Precio (USD)"]
                                     precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
