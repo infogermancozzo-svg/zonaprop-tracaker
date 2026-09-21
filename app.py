@@ -24,10 +24,21 @@ def resumir_con_gemini(texto):
         return ""
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"Actuá como un experto inmobiliario. Resumí la siguiente descripción en máximo 2 o 3 renglones cortos, destacando lo más atractivo (luminosidad, estado, amenities, bajas expensas, ubicación). No uses viñetas, redactalo como un solo párrafo fluido y directo al grano.\n\nDescripción del aviso:\n{texto}"
+        prompt = f"""Actuá como un experto tasador inmobiliario. Tu tarea es leer TODA la descripción del aviso y crear un resumen de máximo 2 o 3 renglones. 
+        
+        REGLAS ESTRICTAS:
+        1. Enfocate ÚNICAMENTE en las características físicas y ventajas del inmueble (distribución, luminosidad, estado de conservación, amenities, ubicación).
+        2. IGNORÁ por completo "disclosures", textos legales, leyes de accesibilidad (ej. Ley 5115), matrículas de corredores (CUCICBA, CPI), avisos de medidas aproximadas, horarios de atención o información de la inmobiliaria.
+        3. Redactá un solo párrafo fluido, directo al grano y sin usar viñetas.
+        
+        Descripción original del aviso:
+        {texto}"""
+        
         respuesta = model.generate_content(prompt)
         return respuesta.text.strip()
     except Exception as e:
+        # Imprimimos el error en la consola de Streamlit para saber si la API falló
+        print(f"Error de Gemini: {e}") 
         return ""
 
 def cargar_datos():
@@ -111,7 +122,6 @@ def extraer_datos_web(url):
         barrio = ""
         piso = ""
 
-        # NIVEL 1 Y 2: Extraer datos primarios y descripción del JSON interno
         next_data_tag = sopa.find("script", id="__NEXT_DATA__")
         if next_data_tag:
             try:
@@ -122,7 +132,6 @@ def extraer_datos_web(url):
                 if props:
                     titulo_texto = props.get("title", titulo_texto)
                     
-                    # Zonaprop suele tener la descripción acá
                     descripcion_aviso = props.get("plainDescription", "")
                     if not descripcion_aviso:
                         descripcion_aviso = props.get("description", "")
@@ -153,7 +162,6 @@ def extraer_datos_web(url):
             except Exception:
                 pass
 
-        # NIVEL 3: Buscar contenedor HTML explícito si el JSON falló
         if not descripcion_aviso:
             div_desc = sopa.find(attrs={"data-qa": "posting-description"}) or sopa.find(id=re.compile("description", re.I))
             if div_desc:
@@ -161,28 +169,27 @@ def extraer_datos_web(url):
                 for p in div_desc.find_all("p"): p.insert_after("\n")
                 descripcion_aviso = div_desc.get_text(separator=" ").strip()
 
-        # NIVEL 4: Metadatos SEO (último recurso)
         if not descripcion_aviso:
             meta_desc = sopa.find("meta", property="og:description") or sopa.find("meta", attrs={"name": "description"})
             if meta_desc:
                 descripcion_aviso = meta_desc.get("content", "")
 
-        # Limpieza de HTML basura que pueda haber quedado
         descripcion_limpia = ""
         if descripcion_aviso:
             descripcion_aviso = descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n")
             descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
             descripcion_limpia = re.sub(r'\n+', '\n', descripcion_limpia).strip()
 
-        # --- IA RESUMEN ---
+        # Generar resumen con la IA
         resumen_ia = resumir_con_gemini(descripcion_limpia)
+        
+        # Fallback de emergencia si la IA falla (ahora agrega un texto para que te des cuenta)
         if not resumen_ia and descripcion_limpia:
             lineas = [l for l in descripcion_limpia.split('\n') if l.strip()]
-            resumen_ia = " \n".join(lineas[:2])
+            resumen_ia = "[IA no disponible] " + " \n".join(lineas[:2])
             if len(lineas) > 2 or len(resumen_ia) > 150:
                 resumen_ia = resumen_ia[:150] + "..."
 
-        # Si no hay absolutamente nada, lo indicamos
         if not descripcion_limpia:
             descripcion_limpia = "No se pudo extraer la descripción de este formato de aviso."
             if not resumen_ia:
@@ -190,7 +197,6 @@ def extraer_datos_web(url):
 
         texto_completo = f"{titulo_texto} {descripcion_limpia} {sopa.get_text(separator=' ')}".upper()
         
-        # Extracciones regex de emergencia
         if precio == 0:
             precio_match = re.search(r'(?:USD|U\$S|US\$)\s*([\d\.]+)', texto_completo)
             if precio_match: precio = int(precio_match.group(1).replace('.', ''))
@@ -331,7 +337,6 @@ if not df.empty:
 st.divider()
 st.subheader(f"🏠 Propiedades en Seguimiento ({len(df)})")
 
-# --- GRID DE TARJETAS (2 COLUMNAS) ---
 if not df.empty:
     columnas_grid = st.columns(2)
     
