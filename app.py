@@ -7,20 +7,20 @@ import re
 import os
 from datetime import datetime
 from huggingface_hub import HfApi, hf_hub_download
-from google import genai
+from groq import Groq
 
 st.set_page_config(page_title="Gestor de Inversiones Inmobiliarias", page_icon="🏢", layout="wide")
 
 HF_TOKEN = st.secrets.get("HF_TOKEN", "")
 REPO_ID = st.secrets.get("DATASET_REPO", "")
 ARCHIVO_CSV = "Avisos propiedades en venta.csv"
-GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "")
 
-def resumir_con_gemini(texto):
-    if not GEMINI_API_KEY or not texto.strip():
+def resumir_con_ia(texto):
+    if not GROQ_API_KEY or not texto.strip():
         return ""
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = Groq(api_key=GROQ_API_KEY)
         
         prompt = f"""Actuá como un experto tasador inmobiliario. Tu tarea es leer TODA la descripción del aviso y crear un resumen de máximo 2 o 3 renglones. 
         
@@ -32,14 +32,18 @@ def resumir_con_gemini(texto):
         Descripción original del aviso:
         {texto}"""
         
-        respuesta = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=prompt
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model="llama-3.3-70b-versatile",
         )
-        return respuesta.text.strip()
-    except Exception:
-        # Mensaje amigable cuando la IA de Google está saturada
-        return "⚠️ [Error IA]: actualizar info en unos minutos"
+        return chat_completion.choices[0].message.content.strip()
+    except Exception as e:
+        return f"⚠️ [Error Groq]: actualizar info en unos minutos. ({str(e)})"
 
 def cargar_datos():
     columnas_base = ["Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Descripción Completa", "Historial Precio"]
@@ -180,7 +184,8 @@ def extraer_datos_web(url):
             descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
             descripcion_limpia = re.sub(r'\n+', '\n', descripcion_limpia).strip()
 
-        resumen_ia = resumir_con_gemini(descripcion_limpia)
+        # Generar resumen con la IA de Groq
+        resumen_ia = resumir_con_ia(descripcion_limpia)
         
         if not resumen_ia and descripcion_limpia:
             lineas = [l for l in descripcion_limpia.split('\n') if l.strip()]
@@ -382,7 +387,6 @@ if not df.empty:
                     else:
                         st.write("No se encontró texto original.")
 
-                # FILA DE BOTONES: Link original y Actualizar Info
                 col_links, col_acts = st.columns(2)
                 with col_links:
                     st.link_button("🔗 Ver Publicación Original", row['Link'], use_container_width=True)
@@ -393,11 +397,9 @@ if not df.empty:
                             if link_actual and str(link_actual).startswith("http"):
                                 datos_frescos = extraer_datos_web(link_actual)
                                 if datos_frescos:
-                                    # Forzamos la actualización de la Descripción y las Notas (IA)
                                     df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
                                     df.at[idx, "Notas Personales"] = datos_frescos["Notas Personales"]
                                     
-                                    # También verificamos el precio como extra
                                     precio_nuevo = datos_frescos["Precio (USD)"]
                                     if precio_nuevo > 0 and precio_nuevo != row["Precio (USD)"]:
                                         hoy = datetime.now().strftime("%d/%m/%Y")
