@@ -351,6 +351,7 @@ if btn_agregar:
             if datos:
                 if datos["Precio (USD)"] > 0:
                     hoy = datetime.now().strftime("%d/%m/%Y")
+                    # Congela el precio fundacional
                     datos["Historial Precio"] = f"{hoy}: USD {datos['Precio (USD)']}"
                     
                 nuevo_registro = pd.DataFrame([datos])
@@ -388,17 +389,19 @@ if not df.empty:
                                     if precios_list:
                                         precio_nuevo = int(precios_list[0].get("amount", 0))
                             
-                            if precio_nuevo > 0:
+                            precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
+                            
+                            # Solo escribe si el precio realmente ES DISTINTO al que está registrado actualmente
+                            if precio_nuevo > 0 and precio_nuevo != precio_viejo:
                                 historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
                                 registro_hoy = f"{hoy}: USD {precio_nuevo}"
                                 
-                                if registro_hoy not in historial_previo:
-                                    df.at[idx, "Precio (USD)"] = precio_nuevo
-                                    if historial_previo == "":
-                                        df.at[idx, "Historial Precio"] = registro_hoy
-                                    else:
-                                        df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
-                                    propiedades_actualizadas += 1
+                                df.at[idx, "Precio (USD)"] = precio_nuevo
+                                if historial_previo == "":
+                                    df.at[idx, "Historial Precio"] = registro_hoy
+                                else:
+                                    df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                propiedades_actualizadas += 1
                     except Exception:
                         pass
             
@@ -417,11 +420,30 @@ if not df.empty:
         
         with col_actual:
             with st.container(border=True):
+                # --- CALCULAR SI HUBO BAJA DE PRECIO ---
+                precio_actual = int(row['Precio (USD)'])
+                historial_str = str(row.get("Historial Precio", ""))
+                primer_precio = precio_actual
+                
+                # Rescata el primer precio original del historial
+                if historial_str:
+                    primer_registro = historial_str.split("|")[0]
+                    match_primer_precio = re.search(r'USD\s*([\d\.]+)', primer_registro.replace('.', ''))
+                    if match_primer_precio:
+                        primer_precio = int(match_primer_precio.group(1))
+
                 col_titulo, col_borrar = st.columns([6, 1])
                 with col_titulo:
                     barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
                     ambientes = int(row['Ambientes']) if row['Ambientes'] else "?"
-                    st.markdown(f"### {barrio} • {ambientes} Amb.")
+                    
+                    texto_titulo = f"### {barrio} • {ambientes} Amb."
+                    
+                    # Etiqueta visual de alerta si el precio actual es MENOR al primer precio
+                    if precio_actual > 0 and precio_actual < primer_precio:
+                        texto_titulo += " 🔥 ¡BAJÓ DE PRECIO!"
+                        
+                    st.markdown(texto_titulo)
                     
                 with col_borrar:
                     if st.button("🗑️", key=f"btn_del_{idx}", help="Eliminar definitivamente"):
@@ -429,16 +451,14 @@ if not df.empty:
                         guardar_datos(df)
                         st.rerun()
                 
-                precio = int(row['Precio (USD)'])
                 m2_tot = int(row['M2 Totales'])
                 m2_cub = int(row['M2 Cubiertos'])
                 m2_desc = m2_tot - m2_cub if m2_tot > m2_cub else 0
                 usd_m2 = int(row['USD/m2 Promedio'])
                 
-                st.markdown(f"**💰 Precio:** USD {precio} | **📊 Precio Ponderado:** USD {usd_m2} / m²")
+                st.markdown(f"**💰 Precio:** USD {precio_actual} | **📊 Precio Ponderado:** USD {usd_m2} / m²")
                 st.markdown(f"**📐 Superficie:** {m2_tot} m² Totales | {m2_cub} m² Cub. | {m2_desc} m² Desc.")
                 
-                # --- SANITARIOS Y EXTRAS ---
                 banos = int(row['Baños']) if 'Baños' in row and pd.notna(row['Baños']) else 0
                 toilettes = int(row['Toilettes']) if 'Toilettes' in row and pd.notna(row['Toilettes']) else 0
                 
@@ -452,8 +472,6 @@ if not df.empty:
                 extras = []
                 if str(row.get('Disposición', '')) != "": extras.append(str(row['Disposición']))
                 if str(row.get('Balcón', '')) != "": extras.append(str(row['Balcón']))
-                
-                # ACÁ AGREGAMOS EL PREFIJO "Orientación:" ANTES DEL PUNTO CARDINAL
                 if str(row.get('Orientación', '')) != "": extras.append(f"Orientación: {str(row['Orientación'])}")
                 
                 if extras:
@@ -513,17 +531,19 @@ if not df.empty:
                                     df.at[idx, "Balcón"] = datos_frescos["Balcón"]
                                     
                                     precio_nuevo = datos_frescos["Precio (USD)"]
-                                    if precio_nuevo > 0 and precio_nuevo != row["Precio (USD)"]:
+                                    precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
+                                    
+                                    # Solo anota en el historial si el precio bajó o subió
+                                    if precio_nuevo > 0 and precio_nuevo != precio_viejo:
                                         hoy = datetime.now().strftime("%d/%m/%Y")
                                         historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
                                         registro_hoy = f"{hoy}: USD {precio_nuevo}"
                                         
-                                        if registro_hoy not in historial_previo:
-                                            df.at[idx, "Precio (USD)"] = precio_nuevo
-                                            if historial_previo == "":
-                                                df.at[idx, "Historial Precio"] = registro_hoy
-                                            else:
-                                                df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                        df.at[idx, "Precio (USD)"] = precio_nuevo
+                                        if historial_previo == "":
+                                            df.at[idx, "Historial Precio"] = registro_hoy
+                                        else:
+                                            df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
                                     
                                     guardar_datos(df)
                                     st.rerun()
