@@ -16,7 +16,6 @@ REPO_ID = st.secrets.get("DATASET_REPO", "")
 ARCHIVO_CSV = "Avisos propiedades en venta.csv"
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "")
 
-# Función de formato monetario: Convierte 95000 a "$95.000"
 def format_precio(num):
     try:
         if pd.isna(num) or num == "" or num == 0: return "$0"
@@ -26,20 +25,24 @@ def format_precio(num):
 
 def resumir_con_ia(texto):
     if not GROQ_API_KEY or not texto.strip():
-        return {"antiguedad": "", "resumen": ""}
+        return {"antiguedad": "", "piso": "no menciona", "resumen": ""}
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un tasador inmobiliario. Analizá el texto y devolvé ÚNICAMENTE un objeto JSON válido con las claves "antiguedad" y "resumen". No agregues texto antes ni después del JSON.
+        prompt = f"""Actuá como un tasador inmobiliario. Analizá el texto y devolvé ÚNICAMENTE un objeto JSON válido con las claves "antiguedad", "piso" y "resumen". No agregues texto antes ni después del JSON.
 
 REGLA VITAL: DEBES RESPONDER ESTRICTAMENTE EN ESPAÑOL (CASTELLANO). NO USES INGLÉS.
 
 Instrucciones para "antiguedad":
 - Si el texto dice a estrenar, poné: "A estrenar"
-- Si dice que es pozo, poné: "Pozo"
-- Si dice en construcción o da fecha de entrega, poné: "En construcción"
-- Si dice los años (ej. 10 años, 50 años), poné: "X años"
+- Si dice pozo, poné: "Pozo"
+- Si dice en construcción o da fecha, poné: "En construcción"
+- Si dice los años (ej. 10 años), poné: "X años"
 - Si no dice nada, dejalo vacío: ""
+
+Instrucciones para "piso":
+- Buscá en qué piso está el departamento (ej. "primer piso", "piso 3", "planta baja", "PB") y poné el valor (ej. "1", "3", "PB").
+- Si NO menciona el piso en ninguna parte, poné estrictamente: "no menciona"
 
 Instrucciones para "resumen":
 - 2 o 3 renglones fluidos sobre las características físicas y ventajas (todo en ESPAÑOL).
@@ -62,12 +65,16 @@ Texto original:
         
         try:
             data = json.loads(respuesta)
-            return {"antiguedad": data.get("antiguedad", ""), "resumen": data.get("resumen", "")}
+            return {
+                "antiguedad": data.get("antiguedad", ""), 
+                "piso": data.get("piso", "no menciona"),
+                "resumen": data.get("resumen", "")
+            }
         except:
-            return {"antiguedad": "", "resumen": respuesta[:150] + "..."}
+            return {"antiguedad": "", "piso": "no menciona", "resumen": respuesta[:150] + "..."}
             
     except Exception as e:
-        return {"antiguedad": "", "resumen": f"⚠️ [Error Groq]: {str(e)}"}
+        return {"antiguedad": "", "piso": "no menciona", "resumen": f"⚠️ [Error Groq]: {str(e)}"}
 
 def cargar_datos():
     columnas_base = [
@@ -108,6 +115,8 @@ def cargar_datos():
         if col in df.columns: 
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
+    # CRÍTICO: Resetea el índice para evitar que se actualicen las filas equivocadas
+    df.reset_index(drop=True, inplace=True)
     return df
 
 def guardar_datos(df):
@@ -264,8 +273,31 @@ def extraer_datos_web(url):
                 a_match = re.search(r'(\d+)\s*AÑO', texto_completo)
                 if a_match: antiguedad_web = f"{a_match.group(1)} años"
 
+        # Búsqueda inicial de piso por expresiones regulares
+        if re.search(r'\b(?:PB|PLANTA\s*BAJA)\b', texto_completo):
+            piso = "PB"
+        else:
+            piso_match = re.search(r'PISO\s*(\d+)', texto_completo)
+            if not piso_match: 
+                piso_match = re.search(r'(\d+)\s*(?:ER|RO|TO|MO|VO|NO|°|ER\.)?\s*PISO', texto_completo)
+            if piso_match: 
+                piso = str(piso_match.group(1))
+            else:
+                mapa_pisos = {"PRIMER": "1", "SEGUNDO": "2", "TERCER": "3", "CUARTO": "4", "QUINTO": "5", "SEXTO": "6", "SEPTIMO": "7", "SÉPTIMO": "7", "OCTAVO": "8", "NOVENO": "9", "DECIMO": "10", "DÉCIMO": "10"}
+                for k, v in mapa_pisos.items():
+                    if f"{k} PISO" in texto_completo or f"{k}°" in texto_completo:
+                        piso = v
+                        break
+
+        # LLAMADA A LA IA
         ia_data = resumir_con_ia(descripcion_limpia)
         resumen_ia = ia_data["resumen"]
+        
+        # Consolidación final del piso: si el buscador falló, le creemos a la IA
+        if not piso or piso.strip() == "":
+            piso = ia_data.get("piso", "no menciona")
+        if not piso or piso.strip() == "":
+            piso = "no menciona"
         
         antiguedad_final = antiguedad_web if antiguedad_web else ia_data["antiguedad"]
         if not antiguedad_final: 
@@ -293,21 +325,6 @@ def extraer_datos_web(url):
 
         if m2_cub > m2_tot: m2_cub = m2_tot
         if m2_tot > 0 and m2_cub == 0: m2_cub = m2_tot
-
-        if re.search(r'\b(?:PB|PLANTA\s*BAJA)\b', texto_completo):
-            piso = "PB"
-        else:
-            piso_match = re.search(r'PISO\s*(\d+)', texto_completo)
-            if not piso_match: 
-                piso_match = re.search(r'(\d+)\s*(?:ER|RO|TO|MO|VO|NO|°|ER\.)?\s*PISO', texto_completo)
-            if piso_match: 
-                piso = str(piso_match.group(1))
-            else:
-                mapa_pisos = {"PRIMER": "1", "SEGUNDO": "2", "TERCER": "3", "CUARTO": "4", "QUINTO": "5", "SEXTO": "6", "SEPTIMO": "7", "SÉPTIMO": "7", "OCTAVO": "8", "NOVENO": "9", "DECIMO": "10", "DÉCIMO": "10"}
-                for k, v in mapa_pisos.items():
-                    if f"{k} PISO" in texto_completo or f"{k}°" in texto_completo:
-                        piso = v
-                        break
 
         m2_descubiertos = m2_tot - m2_cub if m2_tot > m2_cub else 0
         m2_pond = m2_cub + (m2_descubiertos * 0.5)
@@ -358,7 +375,6 @@ if btn_agregar:
             if datos:
                 if datos["Precio (USD)"] > 0:
                     hoy = datetime.now().strftime("%d/%m/%Y")
-                    # Congela el precio fundacional con el nuevo formato
                     datos["Historial Precio"] = f"{hoy}: {format_precio(datos['Precio (USD)'])}"
                     
                 nuevo_registro = pd.DataFrame([datos])
@@ -376,7 +392,10 @@ if not df.empty:
         with st.spinner("Verificando precios online y registrando en el historial..."):
             hoy = datetime.now().strftime("%d/%m/%Y")
             propiedades_actualizadas = 0
-            for idx, row in df.iterrows():
+            
+            # Bucle global por índice real
+            for i in range(len(df)):
+                row = df.iloc[i]
                 link = row["Link"]
                 if link and str(link).startswith("http"):
                     try:
@@ -388,187 +407,4 @@ if not df.empty:
                             precio_nuevo = 0
                             if next_data_tag:
                                 data_json = json.loads(next_data_tag.string)
-                                page_props = data_json.get("props", {}).get("pageProps", {})
-                                props = page_props.get("posting", {}) or page_props.get("initialPosting", {})
-                                precio_val = props.get("priceOperations", [{}])
-                                if precio_val:
-                                    precios_list = precio_val[0].get("prices", [])
-                                    if precios_list:
-                                        precio_nuevo = int(precios_list[0].get("amount", 0))
-                            
-                            precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
-                            
-                            if precio_nuevo > 0 and precio_nuevo != precio_viejo:
-                                historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
-                                registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
-                                
-                                df.at[idx, "Precio (USD)"] = precio_nuevo
-                                if historial_previo == "":
-                                    df.at[idx, "Historial Precio"] = registro_hoy
-                                else:
-                                    df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
-                                propiedades_actualizadas += 1
-                    except Exception:
-                        pass
-            
-            guardar_datos(df)
-            st.success(f"¡Proceso finalizado! Se actualizaron los precios de {propiedades_actualizadas} inmuebles.")
-            st.rerun()
-
-st.divider()
-st.subheader(f"🏠 Propiedades en Seguimiento ({len(df)})")
-
-if not df.empty:
-    # -------------------------------------------------------------
-    # DISEÑO UX: Grilla de 3 columnas para mayor densidad visual
-    # -------------------------------------------------------------
-    columnas_grid = st.columns(3)
-    
-    for idx, row in df.iterrows():
-        col_actual = columnas_grid[idx % 3]
-        
-        with col_actual:
-            with st.container(border=True):
-                precio_actual = int(row['Precio (USD)']) if pd.notna(row['Precio (USD)']) else 0
-                historial_str = str(row.get("Historial Precio", ""))
-                primer_precio = precio_actual
-                
-                # Rescata el primer precio para saber si bajó
-                if historial_str:
-                    primer_registro = historial_str.split("|")[0]
-                    match_primer_precio = re.search(r'(?:USD|\$)\s*([\d\.]+)', primer_registro.replace('.', ''))
-                    if match_primer_precio:
-                        primer_precio = int(match_primer_precio.group(1))
-
-                # DISEÑO UX: Precio gigante a la izquierda, tacho de basura a la derecha
-                c_titulo, c_borrar = st.columns([5, 1])
-                with c_titulo:
-                    st.markdown(f"<h3 style='margin:0; padding:0; color:#1E88E5;'>{format_precio(precio_actual)}</h3>", unsafe_allow_html=True)
-                with c_borrar:
-                    if st.button("🗑️", key=f"btn_del_{idx}", help="Eliminar"):
-                        df = df.drop(idx)
-                        guardar_datos(df)
-                        st.rerun()
-                
-                # Barrio, Ambientes y Etiqueta de Fuego combinados
-                barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
-                ambientes = int(row['Ambientes']) if pd.notna(row['Ambientes']) and row['Ambientes'] != 0 else "?"
-                badge = "<span style='background:#ffebee; color:#c62828; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold; margin-left:6px; vertical-align:middle;'>🔥 BAJÓ</span>" if (0 < precio_actual < primer_precio) else ""
-                
-                st.markdown(f"<div style='margin-top:4px; margin-bottom:8px;'><b>{barrio}</b> • {ambientes} Amb.{badge}</div>", unsafe_allow_html=True)
-                
-                # Variables matemáticas
-                m2_tot = int(row['M2 Totales'])
-                m2_cub = int(row['M2 Cubiertos'])
-                m2_desc = m2_tot - m2_cub if m2_tot > m2_cub else 0
-                usd_m2 = int(row['USD/m2 Promedio'])
-                banos = int(row['Baños']) if 'Baños' in row and pd.notna(row['Baños']) else 0
-                toilettes = int(row['Toilettes']) if 'Toilettes' in row and pd.notna(row['Toilettes']) else 0
-                
-                # DISEÑO UX: Bloque de detalles compactos
-                detalles_html = f"📐 {m2_tot}m² Tot ({m2_cub}m² Cub) <br>"
-                detalles_html += f"📊 Ratio: <b>{format_precio(usd_m2)}/m²</b> <br>"
-                
-                textos_sanitarios = []
-                if banos > 0: textos_sanitarios.append(f"{banos} Baño{'s' if banos > 1 else ''}")
-                if toilettes > 0: textos_sanitarios.append(f"{toilettes} Toil.")
-                if textos_sanitarios:
-                    detalles_html += f"🚿 {' | '.join(textos_sanitarios)} <br>"
-
-                extras = []
-                if str(row.get('Disposición', '')) != "": extras.append(str(row['Disposición']))
-                if str(row.get('Balcón', '')) != "": extras.append(str(row['Balcón']))
-                if str(row.get('Orientación', '')) != "": extras.append(f"Orientación: {str(row['Orientación'])}")
-                if extras:
-                    detalles_html += f"🧭 {' | '.join(extras)}"
-                
-                st.markdown(f"<div style='font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 12px;'>{detalles_html}</div>", unsafe_allow_html=True)
-                
-                # Variables de inputs
-                piso_val = str(row['Piso']).strip()
-                if piso_val.endswith('.0'): piso_val = piso_val[:-2]
-                if piso_val == '0': piso_val = 'PB'
-                antig_val = str(row.get('Antigüedad', 'Contactar agente'))
-                if antig_val == "": antig_val = "Contactar agente"
-                
-                # DISEÑO UX: Inputs compactos usando placeholders en vez de labels grandes
-                col_piso, col_ant = st.columns(2)
-                with col_piso:
-                    nuevo_piso = st.text_input("Piso", value=piso_val, key=f"piso_{idx}", label_visibility="collapsed", placeholder="🏢 Piso")
-                    if nuevo_piso != piso_val:
-                        df.at[idx, "Piso"] = nuevo_piso
-                        guardar_datos(df)
-                        st.rerun()
-                with col_ant:
-                    nuevo_ant = st.text_input("Estado", value=antig_val, key=f"ant_{idx}", label_visibility="collapsed", placeholder="🏗️ Antigüedad")
-                    if nuevo_ant != antig_val:
-                        df.at[idx, "Antigüedad"] = nuevo_ant
-                        guardar_datos(df)
-                        st.rerun()
-
-                nuevas_notas = st.text_area("Resumen", value=str(row['Notas Personales']), height=68, key=f"notas_{idx}", label_visibility="collapsed", placeholder="✨ Resumen IA / Notas")
-                if nuevas_notas != str(row['Notas Personales']):
-                    df.at[idx, "Notas Personales"] = nuevas_notas
-                    guardar_datos(df)
-                    st.rerun()
-
-                # DISEÑO UX: Historial y Descripción en un solo menú expansible
-                with st.expander("📖 Detalles e Historial"):
-                    st.markdown("**📉 Historial de Precios**")
-                    if historial_str and historial_str.strip() != "":
-                        for item in historial_str.split("|"):
-                            item_limpio = item.strip()
-                            # Magia UX: Formatea al vuelo los historiales viejos que decian "USD 95000"
-                            match = re.search(r'(?:USD|\$)\s*([\d\.]+)', item_limpio)
-                            if match:
-                                val = int(match.group(1).replace('.', ''))
-                                item_limpio = item_limpio.replace(match.group(0), format_precio(val))
-                            st.markdown(f"<div style='font-size: 13px;'>• {item_limpio}</div>", unsafe_allow_html=True)
-                    else:
-                        st.markdown("<div style='font-size: 13px;'>Sin cambios registrados.</div>", unsafe_allow_html=True)
-                        
-                    st.markdown("<br><b>📝 Descripción Original</b>", unsafe_allow_html=True)
-                    desc_completa = str(row['Descripción Completa'])
-                    if desc_completa.strip():
-                        st.markdown(f"<div style='font-size: 12px; color: #666; max-height: 150px; overflow-y: auto;'>{desc_completa}</div>", unsafe_allow_html=True)
-                    else:
-                        st.write("No se encontró texto original.")
-
-                # Botones Finales
-                col_links, col_acts = st.columns(2)
-                with col_links:
-                    st.link_button("🔗 Ver Aviso", row['Link'], use_container_width=True)
-                with col_acts:
-                    if st.button("🔄 Actualizar", key=f"btn_act_{idx}", use_container_width=True):
-                        with st.spinner("Descargando..."):
-                            link_actual = row["Link"]
-                            if link_actual and str(link_actual).startswith("http"):
-                                datos_frescos = extraer_datos_web(link_actual)
-                                if datos_frescos:
-                                    df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
-                                    df.at[idx, "Notas Personales"] = datos_frescos["Notas Personales"]
-                                    df.at[idx, "Antigüedad"] = datos_frescos["Antigüedad"]
-                                    df.at[idx, "Baños"] = datos_frescos["Baños"]
-                                    df.at[idx, "Toilettes"] = datos_frescos["Toilettes"]
-                                    df.at[idx, "Disposición"] = datos_frescos["Disposición"]
-                                    df.at[idx, "Orientación"] = datos_frescos["Orientación"]
-                                    df.at[idx, "Balcón"] = datos_frescos["Balcón"]
-                                    
-                                    precio_nuevo = datos_frescos["Precio (USD)"]
-                                    precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
-                                    
-                                    if precio_nuevo > 0 and precio_nuevo != precio_viejo:
-                                        hoy = datetime.now().strftime("%d/%m/%Y")
-                                        historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
-                                        registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
-                                        
-                                        df.at[idx, "Precio (USD)"] = precio_nuevo
-                                        if historial_previo == "":
-                                            df.at[idx, "Historial Precio"] = registro_hoy
-                                        else:
-                                            df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
-                                    
-                                    guardar_datos(df)
-                                    st.rerun()
-else:
-    st.info("No tenés propiedades cargadas. Pegá un link arriba para empezar.")
+                                page_
