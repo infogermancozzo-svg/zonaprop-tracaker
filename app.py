@@ -39,7 +39,7 @@ def resumir_con_ia(texto):
                     "content": prompt,
                 }
             ],
-            model="llama-3.1-70b-versatile",
+            model="gpt-oss-120b",
         )
         return chat_completion.choices[0].message.content.strip()
     except Exception as e:
