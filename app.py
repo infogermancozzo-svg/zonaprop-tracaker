@@ -7,7 +7,7 @@ import re
 import os
 from datetime import datetime
 from huggingface_hub import HfApi, hf_hub_download
-import google.generativeai as genai
+from google import genai # <--- LIBRERÍA NUEVA DE GOOGLE
 
 st.set_page_config(page_title="Gestor de Inversiones Inmobiliarias", page_icon="🏢", layout="wide")
 
@@ -16,14 +16,13 @@ REPO_ID = st.secrets.get("DATASET_REPO", "")
 ARCHIVO_CSV = "Avisos propiedades en venta.csv"
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
 def resumir_con_gemini(texto):
     if not GEMINI_API_KEY or not texto.strip():
         return ""
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # CONEXIÓN CON EL NUEVO SDK DE GOOGLE
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        
         prompt = f"""Actuá como un experto tasador inmobiliario. Tu tarea es leer TODA la descripción del aviso y crear un resumen de máximo 2 o 3 renglones. 
         
         REGLAS ESTRICTAS:
@@ -34,10 +33,12 @@ def resumir_con_gemini(texto):
         Descripción original del aviso:
         {texto}"""
         
-        respuesta = model.generate_content(prompt)
+        respuesta = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt
+        )
         return respuesta.text.strip()
     except Exception as e:
-        # Imprimimos el error en la consola de Streamlit para saber si la API falló
         print(f"Error de Gemini: {e}") 
         return ""
 
@@ -183,7 +184,6 @@ def extraer_datos_web(url):
         # Generar resumen con la IA
         resumen_ia = resumir_con_gemini(descripcion_limpia)
         
-        # Fallback de emergencia si la IA falla (ahora agrega un texto para que te des cuenta)
         if not resumen_ia and descripcion_limpia:
             lineas = [l for l in descripcion_limpia.split('\n') if l.strip()]
             resumen_ia = "[IA no disponible] " + " \n".join(lineas[:2])
