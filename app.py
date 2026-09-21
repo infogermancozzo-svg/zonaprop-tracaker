@@ -266,12 +266,10 @@ def extraer_datos_web(url):
             elif re.search(r'\bORIENTACI[OÓ]N ESTE\b|\bAL ESTE\b', texto_completo): orientacion = "E"
             elif re.search(r'\bORIENTACI[OÓ]N OESTE\b|\bAL OESTE\b', texto_completo): orientacion = "O"
 
-        # LLAMADA A LA IA PRIORITARIA
         ia_data = resumir_con_ia(descripcion_limpia)
         resumen_ia = ia_data["resumen"]
         piso_ia = str(ia_data.get("piso", "no menciona")).strip()
         
-        # Le damos el mando a la IA. Solo usamos el buscador tradicional si la IA se rinde.
         if piso_ia.lower() != "no menciona" and piso_ia != "":
             piso = piso_ia
         else:
@@ -455,28 +453,40 @@ if not df.empty:
                         guardar_datos(df)
                         st.rerun()
                 
-                piso_val = str(row.get('Piso', '')).strip()
-                if piso_val.lower() == 'nan' or piso_val == '': piso_val = 'no menciona'
-                elif piso_val.endswith('.0'): piso_val = piso_val[:-2]
-                if piso_val == '0': piso_val = 'PB'
-                
                 barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
                 ambientes = int(row['Ambientes']) if pd.notna(row['Ambientes']) and row['Ambientes'] != 0 else "?"
                 badge = "<span style='background:#ffebee; color:#c62828; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold; margin-left:6px; vertical-align:middle;'>🔥 BAJÓ</span>" if (0 < precio_actual < primer_precio) else ""
                 
-                valor_mostrar = piso_val if str(piso_val).lower().startswith("piso") else f"Piso: {piso_val}"
+                st.markdown(f"<div style='margin-top:4px; margin-bottom:8px;'><b>{barrio}</b> • {ambientes} Amb.{badge}</div>", unsafe_allow_html=True)
                 
-                c_info, c_piso = st.columns([6, 4])
-                with c_info:
-                    st.markdown(f"<div style='margin-top:6px; margin-bottom:8px;'><b>{barrio}</b> • {ambientes} Amb.{badge}</div>", unsafe_allow_html=True)
+                piso_val = str(row.get('Piso', '')).strip()
+                if piso_val.lower() == 'nan' or piso_val == '': piso_val = 'no menciona'
+                elif piso_val.endswith('.0'): piso_val = piso_val[:-2]
+                if piso_val == '0': piso_val = 'PB'
+
+                antig_val = str(row.get('Antigüedad', '')).strip()
+                if antig_val.lower() == 'nan' or antig_val == '' or antig_val.lower() == 'contactar agente':
+                    antig_val = 'no menciona'
+
+                valor_mostrar_piso = piso_val if str(piso_val).lower().startswith("piso") else f"Piso: {piso_val}"
+                valor_mostrar_ant = antig_val if str(antig_val).lower().startswith("antig") else f"Antigüedad: {antig_val}"
+                
+                c_piso, c_ant = st.columns(2)
                 with c_piso:
-                    nuevo_piso = st.text_input("Piso", value=valor_mostrar, key=f"piso_{idx}", label_visibility="collapsed")
-                    if nuevo_piso != valor_mostrar:
+                    nuevo_piso = st.text_input("Piso", value=valor_mostrar_piso, key=f"piso_{idx}", label_visibility="collapsed")
+                    if nuevo_piso != valor_mostrar_piso:
                         dato_limpio = nuevo_piso.replace("Piso: ", "").replace("Piso:", "").strip()
                         df.at[idx, "Piso"] = dato_limpio
                         guardar_datos(df)
                         st.rerun()
-                
+                with c_ant:
+                    nuevo_ant = st.text_input("Antigüedad", value=valor_mostrar_ant, key=f"ant_{idx}", label_visibility="collapsed")
+                    if nuevo_ant != valor_mostrar_ant:
+                        dato_limpio = nuevo_ant.replace("Antigüedad: ", "").replace("Antigüedad:", "").strip()
+                        df.at[idx, "Antigüedad"] = dato_limpio
+                        guardar_datos(df)
+                        st.rerun()
+
                 m2_tot = int(row['M2 Totales'])
                 m2_cub = int(row['M2 Cubiertos'])
                 m2_desc = m2_tot - m2_cub if m2_tot > m2_cub else 0
@@ -501,23 +511,6 @@ if not df.empty:
                     detalles_html += f"🧭 {' | '.join(extras)}"
                 
                 st.markdown(f"<div style='font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 12px;'>{detalles_html}</div>", unsafe_allow_html=True)
-                
-                antig_val = str(row.get('Antigüedad', '')).strip()
-                if antig_val.lower() == 'nan' or antig_val == '' or antig_val.lower() == 'contactar agente':
-                    antig_val = 'no menciona'
-
-                valor_mostrar_ant = antig_val if str(antig_val).lower().startswith("antig") else f"Antigüedad: {antig_val}"
-                
-                c_ant_lbl, c_ant_inp = st.columns([4, 6])
-                with c_ant_lbl:
-                    st.markdown("<div style='margin-top:7px; font-size:13px; font-weight:bold; color:#555;'>🏗️ Antigüedad:</div>", unsafe_allow_html=True)
-                with c_ant_inp:
-                    nuevo_ant = st.text_input("Antigüedad", value=valor_mostrar_ant, key=f"ant_{idx}", label_visibility="collapsed")
-                    if nuevo_ant != valor_mostrar_ant:
-                        dato_limpio = nuevo_ant.replace("Antigüedad: ", "").replace("Antigüedad:", "").strip()
-                        df.at[idx, "Antigüedad"] = dato_limpio
-                        guardar_datos(df)
-                        st.rerun()
 
                 resumen_ia = str(row.get('Resumen IA', ''))
                 if resumen_ia != "":
@@ -561,13 +554,9 @@ if not df.empty:
                                 if datos_frescos:
                                     df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
                                     df.at[idx, "Resumen IA"] = datos_frescos["Resumen IA"]
-                                    df.at[idx, "Antigüedad"] = datos_frescos["Antigüedad"]
-                                    df.at[idx, "Piso"] = datos_frescos["Piso"]
-                                    df.at[idx, "Baños"] = datos_frescos["Baños"]
-                                    df.at[idx, "Toilettes"] = datos_frescos["Toilettes"]
-                                    df.at[idx, "Disposición"] = datos_frescos["Disposición"]
-                                    df.at[idx, "Orientación"] = datos_frescos["Orientación"]
-                                    df.at[idx, "Balcón"] = datos_frescos["Balcón"]
+                                    
+                                    # CAMBIO CLAVE (Opción 1): Protegemos el Piso y la Antigüedad actual 
+                                    # para que la actualización NO sobrescriba correcciones manuales del usuario.
                                     
                                     precio_nuevo = datos_frescos["Precio (USD)"]
                                     precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
