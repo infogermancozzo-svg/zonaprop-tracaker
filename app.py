@@ -34,7 +34,7 @@ def resumir_con_gemini(texto):
         
         # ACÁ ESTÁ EL ARREGLO: Usamos el modelo más moderno disponible
         respuesta = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.6-flash',
             contents=prompt
         )
         return respuesta.text.strip()
