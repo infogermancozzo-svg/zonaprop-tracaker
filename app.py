@@ -18,62 +18,51 @@ GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "")
 
 def resumir_con_ia(texto):
     if not GROQ_API_KEY or not texto.strip():
-        return {"antiguedad": "Contactar agente", "resumen": ""}
+        return {"antiguedad": "", "resumen": ""}
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un experto tasador inmobiliario. Analizá la siguiente descripción de un aviso y extraé la información solicitada respetando EXACTAMENTE esta estructura:
+        prompt = f"""Actuá como un tasador inmobiliario. Analizá el texto y devolvé ÚNICAMENTE un objeto JSON válido con las claves "antiguedad" y "resumen". No agregues texto antes ni después del JSON.
 
-ANTIGUEDAD: [escribí acá una de las opciones]
-RESUMEN: [escribí acá tu resumen]
+Instrucciones para "antiguedad":
+- Si el texto dice a estrenar, poné: "A estrenar"
+- Si dice que es pozo, poné: "Pozo"
+- Si dice en construcción o da fecha de entrega, poné: "En construcción"
+- Si dice los años (ej. 10 años, 50 años), poné: "X años"
+- Si no dice nada, dejalo vacío: ""
 
-Opciones obligatorias para ANTIGUEDAD (elegí solo una):
-- Pozo
-- En construcción (termina en [Mes/Año])
-- Terminado
-- [X] años
-- Contactar agente (si no hay ninguna pista sobre el estado o antigüedad)
+Instrucciones para "resumen":
+- 2 o 3 renglones fluidos sobre las características físicas y ventajas.
+- Ignorá textos legales, inmobiliarias y matrículas.
 
-Reglas para RESUMEN:
-- Redactá un solo párrafo fluido, directo al grano y sin usar viñetas. Máximo 2 o 3 renglones.
-- Enfocate ÚNICAMENTE en las características físicas y ventajas (luminosidad, amenities, distribución, estado, ubicación).
-- IGNORÁ por completo "disclosures", textos legales, Ley 5115, matrículas de corredores (CUCICBA/CPI), avisos de medidas aproximadas, horarios o información de la inmobiliaria.
-
-Descripción original del aviso:
+Texto original:
 {texto}"""
         
         chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+            messages=[{"role": "user", "content": prompt}],
             model="mixtral-8x7b-32768",
+            temperature=0.1
         )
         
         respuesta = chat_completion.choices[0].message.content.strip()
         
-        # Procesar la respuesta de la IA
-        antiguedad = "Contactar agente"
-        resumen = respuesta
+        # Limpiar si la IA agregó comillas de bloque de código Markdown
+        respuesta = re.sub(r'^```json\s*', '', respuesta)
+        respuesta = re.sub(r'^```\s*', '', respuesta)
+        respuesta = re.sub(r'\s*```$', '', respuesta)
         
-        match_antiguedad = re.search(r'ANTIG[UÜ]EDAD:\s*(.*?)(?=\n|RESUMEN:|$)', respuesta, re.IGNORECASE | re.DOTALL)
-        match_resumen = re.search(r'RESUMEN:\s*(.*)', respuesta, re.IGNORECASE | re.DOTALL)
-        
-        if match_antiguedad:
-            antiguedad = match_antiguedad.group(1).strip()
-        if match_resumen:
-            resumen = match_resumen.group(1).strip()
+        try:
+            data = json.loads(respuesta)
+            return {"antiguedad": data.get("antiguedad", ""), "resumen": data.get("resumen", "")}
+        except:
+            return {"antiguedad": "", "resumen": respuesta[:150] + "..."}
             
-        return {"antiguedad": antiguedad, "resumen": resumen}
-        
     except Exception as e:
-        return {"antiguedad": "Contactar agente", "resumen": f"⚠️ [Error Groq]: actualizar info en unos minutos. ({str(e)})"}
+        return {"antiguedad": "", "resumen": f"⚠️ [Error Groq]: {str(e)}"}
 
 def cargar_datos():
-    # Se agregó la columna "Antigüedad" a la base
-    columnas_base = ["Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Antigüedad", "Link", "Notas Personales", "Descripción Completa", "Historial Precio"]
+    # Agregamos Baños y Toilettes a las columnas base
+    columnas_base = ["Barrio", "Piso", "Ambientes", "Baños", "Toilettes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Antigüedad", "Link", "Notas Personales", "Descripción Completa", "Historial Precio"]
     if HF_TOKEN and REPO_ID:
         try:
             ruta_local = hf_hub_download(repo_id=REPO_ID, filename=ARCHIVO_CSV, repo_type="dataset", token=HF_TOKEN)
@@ -101,7 +90,7 @@ def cargar_datos():
     for col in ["Barrio", "Piso", "Antigüedad", "Notas Personales", "Descripción Completa", "Historial Precio", "Link"]:
         df[col] = df[col].astype(object).fillna("")
         
-    for col in ["Precio (USD)", "USD/m2 Promedio", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados"]:
+    for col in ["Precio (USD)", "USD/m2 Promedio", "Ambientes", "Baños", "Toilettes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados"]:
         if col in df.columns: 
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
@@ -138,20 +127,14 @@ def extraer_datos_web(url):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         respuesta = requests.get(url, impersonate="chrome110", headers=headers, timeout=15)
-        
-        if respuesta.status_code != 200: 
-            return None
+        if respuesta.status_code != 200: return None
             
         sopa = BeautifulSoup(respuesta.text, 'html.parser')
         
         titulo_texto = "Propiedad Zonaprop"
         descripcion_aviso = ""
-        precio = 0
-        m2_tot = 0
-        m2_cub = 0
-        ambientes = 0
-        barrio = ""
-        piso = ""
+        precio = m2_tot = m2_cub = ambientes = banos = toilettes = 0
+        barrio = piso = antiguedad_web = ""
 
         next_data_tag = sopa.find("script", id="__NEXT_DATA__")
         if next_data_tag:
@@ -162,30 +145,47 @@ def extraer_datos_web(url):
                 
                 if props:
                     titulo_texto = props.get("title", titulo_texto)
-                    
-                    descripcion_aviso = props.get("plainDescription", "")
-                    if not descripcion_aviso:
-                        descripcion_aviso = props.get("description", "")
+                    descripcion_aviso = props.get("plainDescription", "") or props.get("description", "")
                     
                     precio_val = props.get("priceOperations", [{}])
                     if precio_val:
                         precios_list = precio_val[0].get("prices", [])
-                        if precios_list:
-                            precio = int(precios_list[0].get("amount", 0))
+                        if precios_list: precio = int(precios_list[0].get("amount", 0))
                     
+                    # Extracción profunda de Features (Baños, Toilettes, Antigüedad)
                     features = props.get("mainFeatures", [])
+                    if isinstance(features, dict): features = list(features.values())
+                    
                     for feat in features:
-                        f_text = str(feat).upper()
-                        if "M²" in f_text or "METROS" in f_text:
-                            m2_match = re.search(r'(\d+)', f_text)
+                        f_str = str(feat).upper()
+                        
+                        # Metros y Ambientes
+                        if "M²" in f_str or "METROS" in f_str:
+                            m2_match = re.search(r'(\d+)', f_str)
                             if m2_match:
                                 val = int(m2_match.group(1))
-                                if "CUB" in f_text: m2_cub = val
-                                elif "TOT" in f_text: m2_tot = val
+                                if "CUB" in f_str: m2_cub = val
+                                elif "TOT" in f_str: m2_tot = val
                                 elif m2_tot == 0: m2_tot = val
-                        if "AMB" in f_text:
-                            amb_match = re.search(r'(\d+)', f_text)
+                        if "AMB" in f_str:
+                            amb_match = re.search(r'(\d+)', f_str)
                             if amb_match: ambientes = int(amb_match.group(1))
+                            
+                        # Baños y Toilettes
+                        if "BAÑO" in f_str or "BATHROOM" in f_str:
+                            num = re.search(r'(\d+)', f_str)
+                            if num: banos = int(num.group(1))
+                        if "TOILET" in f_str:
+                            num = re.search(r'(\d+)', f_str)
+                            if num: toilettes = int(num.group(1))
+                            
+                        # Antigüedad en la etiqueta web
+                        if "A ESTRENAR" in f_str: antiguedad_web = "A estrenar"
+                        elif "POZO" in f_str: antiguedad_web = "Pozo"
+                        elif "CONSTRUCCI" in f_str: antiguedad_web = "En construcción"
+                        elif "AÑO" in f_str:
+                            a_match = re.search(r'(\d+)', f_str)
+                            if a_match: antiguedad_web = f"{a_match.group(1)} años"
 
                     location = props.get("location", {})
                     b_name = location.get("parent", {}).get("name", "") or location.get("name", "")
@@ -200,34 +200,43 @@ def extraer_datos_web(url):
                 for p in div_desc.find_all("p"): p.insert_after("\n")
                 descripcion_aviso = div_desc.get_text(separator=" ").strip()
 
-        if not descripcion_aviso:
-            meta_desc = sopa.find("meta", property="og:description") or sopa.find("meta", attrs={"name": "description"})
-            if meta_desc:
-                descripcion_aviso = meta_desc.get("content", "")
-
         descripcion_limpia = ""
         if descripcion_aviso:
             descripcion_aviso = descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n")
             descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
             descripcion_limpia = re.sub(r'\n+', '\n', descripcion_limpia).strip()
 
-        # LLAMADA A LA IA (Ahora devuelve un diccionario)
+        texto_completo = f"{titulo_texto} {descripcion_limpia} {sopa.get_text(separator=' ')}".upper()
+
+        # Búsqueda de rescate en todo el texto visible si los campos json fallaron
+        if banos == 0:
+            b_match = re.search(r'(\d+)\s*BAÑO', texto_completo)
+            if b_match: banos = int(b_match.group(1))
+        if toilettes == 0:
+            t_match = re.search(r'(\d+)\s*TOILET', texto_completo)
+            if t_match: toilettes = int(t_match.group(1))
+            
+        if not antiguedad_web:
+            if re.search(r'\bA ESTRENAR\b', texto_completo): antiguedad_web = "A estrenar"
+            elif re.search(r'\b(?:EN POZO|POZO)\b', texto_completo): antiguedad_web = "Pozo"
+            elif re.search(r'\b(?:EN CONSTRUCCI[OÓ]N)\b', texto_completo): antiguedad_web = "En construcción"
+            else:
+                a_match = re.search(r'(\d+)\s*AÑO', texto_completo)
+                if a_match: antiguedad_web = f"{a_match.group(1)} años"
+
+        # LLAMADA A LA IA CON REGLAS JSON ESTRICTAS
         ia_data = resumir_con_ia(descripcion_limpia)
         resumen_ia = ia_data["resumen"]
-        antiguedad_ia = ia_data["antiguedad"]
         
-        if not resumen_ia and descripcion_limpia:
-            lineas = [l for l in descripcion_limpia.split('\n') if l.strip()]
-            resumen_ia = "[IA no disponible] " + " \n".join(lineas[:2])
-            antiguedad_ia = "Contactar agente"
+        # Priorizar la antigüedad extraída directo de la web. Si no hay, usar la deducción de la IA.
+        antiguedad_final = antiguedad_web if antiguedad_web else ia_data["antiguedad"]
+        if not antiguedad_final: 
+            antiguedad_final = "Contactar agente"
 
         if not descripcion_limpia:
-            descripcion_limpia = "No se pudo extraer la descripción de este formato de aviso."
+            descripcion_limpia = "No se pudo extraer la descripción."
             resumen_ia = "Sin descripción disponible."
-            antiguedad_ia = "Contactar agente"
 
-        texto_completo = f"{titulo_texto} {descripcion_limpia} {sopa.get_text(separator=' ')}".upper()
-        
         if precio == 0:
             precio_match = re.search(r'(?:USD|U\$S|US\$)\s*([\d\.]+)', texto_completo)
             if precio_match: precio = int(precio_match.group(1).replace('.', ''))
@@ -281,8 +290,9 @@ def extraer_datos_web(url):
         
         return {
             "Barrio": barrio if barrio else "CABA", "Piso": piso, "Ambientes": ambientes,
+            "Baños": banos, "Toilettes": toilettes, # <-- NUEVAS COLUMNAS
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
-            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Antigüedad": antiguedad_ia, 
+            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Antigüedad": antiguedad_final, 
             "Link": url, "Notas Personales": resumen_ia, "Descripción Completa": descripcion_limpia, "Historial Precio": ""
         }
     except Exception:
@@ -379,7 +389,16 @@ if not df.empty:
                 with col_titulo:
                     barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
                     ambientes = int(row['Ambientes']) if row['Ambientes'] else "?"
-                    st.markdown(f"### {barrio} • {ambientes} Amb.")
+                    banos = int(row['Baños']) if 'Baños' in row and pd.notna(row['Baños']) else 0
+                    toilettes = int(row['Toilettes']) if 'Toilettes' in row and pd.notna(row['Toilettes']) else 0
+                    
+                    # Título dinámico que suma baños y toilettes solo si existen
+                    texto_titulo = f"### {barrio} • {ambientes} Amb."
+                    if banos > 0: texto_titulo += f" • {banos} Baños"
+                    if toilettes > 0: texto_titulo += f" • {toilettes} Toil."
+                    
+                    st.markdown(texto_titulo)
+                    
                 with col_borrar:
                     if st.button("🗑️", key=f"btn_del_{idx}", help="Eliminar definitivamente"):
                         df = df.drop(idx)
@@ -392,16 +411,12 @@ if not df.empty:
                 m2_desc = m2_tot - m2_cub if m2_tot > m2_cub else 0
                 usd_m2 = int(row['USD/m2 Promedio'])
                 
-                # Formateo visual del diseño
                 st.markdown(f"**💰 Precio:** USD {precio} | **📊 Precio Ponderado:** USD {usd_m2} / m²")
                 st.markdown(f"**📐 Superficie:** {m2_tot} m² Totales | {m2_cub} m² Cub. | {m2_desc} m² Desc.")
                 
-                # Procesamiento y limpieza del campo "Piso"
                 piso_val = str(row['Piso']).strip()
-                if piso_val.endswith('.0'): 
-                    piso_val = piso_val[:-2]
-                if piso_val == '0': 
-                    piso_val = 'PB'
+                if piso_val.endswith('.0'): piso_val = piso_val[:-2]
+                if piso_val == '0': piso_val = 'PB'
                 
                 antig_val = str(row.get('Antigüedad', 'Contactar agente'))
                 if antig_val == "": antig_val = "Contactar agente"
@@ -420,7 +435,7 @@ if not df.empty:
                         guardar_datos(df)
                         st.rerun()
 
-                nuevas_notas = st.text_area("✨ Resumen (IA) / Notas Personales", value=str(row['Notas Personales']), height=100, key=f"notas_{idx}")
+                nuevas_notas = st.text_area("✨ Resumen (IA)", value=str(row['Notas Personales']), height=100, key=f"notas_{idx}")
                 if nuevas_notas != str(row['Notas Personales']):
                     df.at[idx, "Notas Personales"] = nuevas_notas
                     guardar_datos(df)
@@ -443,9 +458,12 @@ if not df.empty:
                             if link_actual and str(link_actual).startswith("http"):
                                 datos_frescos = extraer_datos_web(link_actual)
                                 if datos_frescos:
+                                    # Actualizamos todo el bloque para que incorpore los baños y antigüedad
                                     df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
                                     df.at[idx, "Notas Personales"] = datos_frescos["Notas Personales"]
                                     df.at[idx, "Antigüedad"] = datos_frescos["Antigüedad"]
+                                    df.at[idx, "Baños"] = datos_frescos["Baños"]
+                                    df.at[idx, "Toilettes"] = datos_frescos["Toilettes"]
                                     
                                     precio_nuevo = datos_frescos["Precio (USD)"]
                                     if precio_nuevo > 0 and precio_nuevo != row["Precio (USD)"]:
