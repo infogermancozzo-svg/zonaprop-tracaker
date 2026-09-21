@@ -32,13 +32,13 @@ def resumir_con_gemini(texto):
         Descripción original del aviso:
         {texto}"""
         
+        # ACÁ ESTÁ EL ARREGLO: Usamos el modelo más moderno disponible
         respuesta = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt
         )
         return respuesta.text.strip()
     except Exception as e:
-        # Esto va a mostrar el error de Google directo en la pantalla de la app
         return f"[Error IA]: {str(e)}"
 
 def cargar_datos():
@@ -180,7 +180,6 @@ def extraer_datos_web(url):
             descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
             descripcion_limpia = re.sub(r'\n+', '\n', descripcion_limpia).strip()
 
-        # Generar resumen con la IA
         resumen_ia = resumir_con_gemini(descripcion_limpia)
         
         if not resumen_ia and descripcion_limpia:
