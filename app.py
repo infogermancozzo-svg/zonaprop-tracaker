@@ -27,19 +27,19 @@ def resumir_con_gemini(texto):
         REGLAS ESTRICTAS:
         1. Enfocate ÚNICAMENTE en las características físicas y ventajas del inmueble (distribución, luminosidad, estado de conservación, amenities, ubicación).
         2. IGNORÁ por completo "disclosures", textos legales, leyes de accesibilidad (ej. Ley 5115), matrículas de corredores (CUCICBA, CPI), avisos de medidas aproximadas, horarios de atención o información de la inmobiliaria.
-        3. Redactá un solo párrafo fluido, directo al grano y sin usar viñetas. Si el inmueble no esta terminado, poner en MAYUSCULA Fecha de entrega al final. Si no hay fecha de entrega, poner Obra a Terminar y dar algun detalle que conste en la descripcion.
+        3. Redactá un solo párrafo fluido, directo al grano y sin usar viñetas.
         
         Descripción original del aviso:
         {texto}"""
         
-        # ACÁ ESTÁ EL ARREGLO: Usamos el modelo más moderno disponible
         respuesta = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=prompt
         )
         return respuesta.text.strip()
-    except Exception as e:
-        return f"[Error IA]: {str(e)}"
+    except Exception:
+        # Mensaje amigable cuando la IA de Google está saturada
+        return "⚠️ [Error IA]: actualizar info en unos minutos"
 
 def cargar_datos():
     columnas_base = ["Barrio", "Piso", "Ambientes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", "USD/m2 Promedio", "Link", "Notas Personales", "Descripción Completa", "Historial Precio"]
@@ -382,7 +382,37 @@ if not df.empty:
                     else:
                         st.write("No se encontró texto original.")
 
-                st.link_button("🔗 Ver Publicación Original", row['Link'], use_container_width=True)
+                # FILA DE BOTONES: Link original y Actualizar Info
+                col_links, col_acts = st.columns(2)
+                with col_links:
+                    st.link_button("🔗 Ver Publicación Original", row['Link'], use_container_width=True)
+                with col_acts:
+                    if st.button("🔄 Actualizar Info / IA", key=f"btn_act_{idx}", use_container_width=True):
+                        with st.spinner("Reintentando descargar datos e IA..."):
+                            link_actual = row["Link"]
+                            if link_actual and str(link_actual).startswith("http"):
+                                datos_frescos = extraer_datos_web(link_actual)
+                                if datos_frescos:
+                                    # Forzamos la actualización de la Descripción y las Notas (IA)
+                                    df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
+                                    df.at[idx, "Notas Personales"] = datos_frescos["Notas Personales"]
+                                    
+                                    # También verificamos el precio como extra
+                                    precio_nuevo = datos_frescos["Precio (USD)"]
+                                    if precio_nuevo > 0 and precio_nuevo != row["Precio (USD)"]:
+                                        hoy = datetime.now().strftime("%d/%m/%Y")
+                                        historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
+                                        registro_hoy = f"{hoy}: USD {precio_nuevo}"
+                                        
+                                        if registro_hoy not in historial_previo:
+                                            df.at[idx, "Precio (USD)"] = precio_nuevo
+                                            if historial_previo == "":
+                                                df.at[idx, "Historial Precio"] = registro_hoy
+                                            else:
+                                                df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                    
+                                    guardar_datos(df)
+                                    st.rerun()
                 
                 with st.expander("📉 Ver historial de precios"):
                     historial = str(row["Historial Precio"])
