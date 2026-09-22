@@ -403,4 +403,74 @@ if not df.empty:
                 if resumen_ia != "":
                     st.markdown(f"<div style='font-size: 12px; color: #1e3a5f; background-color: #e8f4fd; padding: 8px; border-radius: 5px; margin-bottom: 8px; border-left: 3px solid #1E88E5;'>✨ <b>Resumen IA:</b> {resumen_ia}</div>", unsafe_allow_html=True)
 
-                nuevas_notas = st.text_area("Notas",
+                nuevas_notas = st.text_area("Notas", value=str(row.get('Notas Personales', '')), height=68, key=f"notas_{idx}", label_visibility="collapsed", placeholder="📝 Escribí tus notas personales acá...")
+                if nuevas_notas != str(row.get('Notas Personales', '')):
+                    df.at[idx, "Notas Personales"] = nuevas_notas
+                    guardar_datos(df)
+                    st.rerun()
+
+                with st.expander("📖 Detalles e Historial"):
+                    st.markdown("**📉 Historial de Precios**")
+                    if historial_str and historial_str.strip() != "":
+                        for item in historial_str.split("|"):
+                            item_limpio = item.strip()
+                            match = re.search(r'(?:USD|\$)\s*([\d\.]+)', item_limpio)
+                            if match:
+                                val = int(match.group(1).replace('.', ''))
+                                item_limpio = item_limpio.replace(match.group(0), format_precio(val))
+                            st.markdown(f"<div style='font-size: 13px;'>• {item_limpio}</div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown("<div style='font-size: 13px;'>Sin cambios registrados.</div>", unsafe_allow_html=True)
+                        
+                    st.markdown("<br><b>📝 Descripción Original</b>", unsafe_allow_html=True)
+                    desc_completa = str(row['Descripción Completa'])
+                    if desc_completa.strip():
+                        st.markdown(f"<div style='font-size: 12px; color: #666; max-height: 150px; overflow-y: auto;'>{desc_completa}</div>", unsafe_allow_html=True)
+                    else:
+                        st.write("No se encontró texto original.")
+
+                col_links, col_acts = st.columns(2)
+                with col_links:
+                    st.link_button("🔗 Ver Aviso", row['Link'], use_container_width=True)
+                with col_acts:
+                    if st.button("🔄 Actualizar", key=f"btn_act_{idx}", use_container_width=True):
+                        with st.spinner("Descargando con IA..."):
+                            link_actual = row["Link"]
+                            if link_actual and str(link_actual).startswith("http"):
+                                datos_frescos = extraer_datos_web(link_actual)
+                                if datos_frescos:
+                                    # --- LA IA ACTUALIZA, PERO PROTEGE TU EDICIÓN MANUAL ---
+                                    df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
+                                    df.at[idx, "Resumen IA"] = datos_frescos["Resumen IA"]
+                                    
+                                    if int(datos_frescos["Precio (USD)"]) > 0:
+                                        precio_nuevo = datos_frescos["Precio (USD)"]
+                                        precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
+                                        
+                                        if precio_nuevo > 0 and precio_nuevo != precio_viejo:
+                                            hoy = datetime.now().strftime("%d/%m/%Y")
+                                            historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
+                                            registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
+                                            
+                                            df.at[idx, "Precio (USD)"] = precio_nuevo
+                                            if historial_previo == "":
+                                                df.at[idx, "Historial Precio"] = registro_hoy
+                                            else:
+                                                df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                        
+                                        df.at[idx, "M2 Totales"] = datos_frescos["M2 Totales"]
+                                        df.at[idx, "M2 Cubiertos"] = datos_frescos["M2 Cubiertos"]
+                                        df.at[idx, "M2 Ponderados"] = datos_frescos["M2 Ponderados"]
+                                        df.at[idx, "USD/m2 Promedio"] = datos_frescos["USD/m2 Promedio"]
+                                        
+                                        df.at[idx, "Ambientes"] = datos_frescos["Ambientes"]
+                                        df.at[idx, "Baños"] = datos_frescos["Baños"]
+                                        df.at[idx, "Toilettes"] = datos_frescos["Toilettes"]
+                                        df.at[idx, "Disposición"] = datos_frescos["Disposición"]
+                                        df.at[idx, "Orientación"] = datos_frescos["Orientación"]
+                                        df.at[idx, "Balcón"] = datos_frescos["Balcón"]
+                                    
+                                    guardar_datos(df)
+                                    st.rerun()
+else:
+    st.info("No tenés propiedades cargadas. Pegá un link arriba para empezar.")
