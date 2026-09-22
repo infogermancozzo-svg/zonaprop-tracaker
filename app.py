@@ -23,34 +23,36 @@ def format_precio(num):
     except:
         return "$0"
 
-def resumir_con_ia(texto):
-    if not GROQ_API_KEY or not texto.strip():
-        return {"antiguedad": "no menciona", "piso": "no menciona", "resumen": ""}
+# --- NUEVO CEREBRO: LA IA EXTRAE ABSOLUTAMENTE TODO ---
+def extraer_todo_con_ia(texto_crudo):
+    if not GROQ_API_KEY or not texto_crudo.strip():
+        return {}
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un tasador inmobiliario estricto. Analizá el texto y devolvé ÚNICAMENTE un objeto JSON válido con las claves "antiguedad", "piso" y "resumen". No agregues texto antes ni después del JSON.
+        prompt = f"""Actuá como un extractor de datos inmobiliarios experto. Tu objetivo es leer los datos en bruto de un aviso y extraer toda la información en un ÚNICO objeto JSON válido.
 
-REGLA VITAL: DEBES RESPONDER ESTRICTAMENTE EN ESPAÑOL (CASTELLANO). NO USES INGLÉS.
+REGLA VITAL: RESPONDER ESTRICTAMENTE EN ESPAÑOL Y ÚNICAMENTE CON EL JSON. NO ESCRIBAS NADA FUERA DE LAS LLAVES {{ }}.
 
-Instrucciones para "antiguedad":
-- Buscá explícitamente los años de antigüedad (ej. "10 años", "50 años de antigüedad").
-- Si el texto dice a estrenar, poné: "A estrenar"
-- Si dice pozo, poné: "Pozo"
-- Si dice en construcción o da fecha, poné: "En construcción"
-- Si NO dice absolutamente nada sobre los años o el estado, poné estrictamente: "no menciona"
+Estructura JSON requerida y reglas estrictas:
+{{
+    "barrio": "Nombre del barrio (ej. 'Palermo'). Si no dice, poné 'CABA'.",
+    "precio": Número entero del precio en USD (ej. 95000). Si no dice, poné 0,
+    "m2_totales": Número entero. Si no dice, poné 0,
+    "m2_cubiertos": Número entero. Si no dice, poné 0,
+    "ambientes": Número entero. Si no dice, poné 0,
+    "banos": Número entero de baños. Si no dice, poné 0,
+    "toilettes": Número entero de toilettes. Si no dice, poné 0,
+    "piso": "Piso del departamento (ej. '3', 'PB'). PROHIBIDO adivinar por la cantidad total de pisos del edificio. Si no dice en qué piso está la unidad, poné 'no menciona'.",
+    "antiguedad": "Años de antigüedad (ej. '10 años'). Si dice a estrenar, poné 'A estrenar'. Si es pozo, 'Pozo'. Si no dice nada, poné 'no menciona'.",
+    "disposicion": "'Frente', 'Contrafrente', 'Lateral', o 'no menciona'.",
+    "orientacion": "Punto cardinal ('N', 'S', 'E', 'O', 'NE', 'NO', 'SE', 'SO') o 'no menciona'.",
+    "balcon": "'Balcón' si tiene, sino 'no menciona'.",
+    "resumen": "2 o 3 renglones sobre características físicas y ventajas del inmueble."
+}}
 
-Instrucciones para "piso" (MUY IMPORTANTE):
-- Identificá en qué piso exacto está EL DEPARTAMENTO en venta (ej. "en el 6° piso", "piso 6", "unidad al frente en 2do piso").
-- PROHIBIDO absoluto: No confundas la cantidad total de pisos del edificio (ej. "edificio de 8 pisos", "torre de 10 pisos", "planta baja y 4 pisos") con el piso de la unidad. 
-- Si el texto solo menciona cuántos pisos tiene el edificio entero pero NO especifica en qué piso se ubica este departamento, debés responder estrictamente: "no menciona".
-
-Instrucciones para "resumen":
-- 2 o 3 renglones fluidos sobre las características físicas y ventajas (todo en ESPAÑOL).
-- Ignorá textos legales, inmobiliarias y matrículas.
-
-Texto original:
-{texto}"""
+Datos en bruto del aviso a analizar:
+{texto_crudo}"""
         
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -60,22 +62,16 @@ Texto original:
         
         respuesta = chat_completion.choices[0].message.content.strip()
         
+        # Limpieza de formato markdown si la IA lo incluyó
         respuesta = re.sub(r'^```json\s*', '', respuesta)
         respuesta = re.sub(r'^```\s*', '', respuesta)
         respuesta = re.sub(r'\s*```$', '', respuesta)
         
-        try:
-            data = json.loads(respuesta)
-            return {
-                "antiguedad": data.get("antiguedad", "no menciona"), 
-                "piso": data.get("piso", "no menciona"),
-                "resumen": data.get("resumen", "")
-            }
-        except:
-            return {"antiguedad": "no menciona", "piso": "no menciona", "resumen": respuesta[:150] + "..."}
+        return json.loads(respuesta)
             
     except Exception as e:
-        return {"antiguedad": "no menciona", "piso": "no menciona", "resumen": f"⚠️ [Error Groq]: {str(e)}"}
+        print(f"Error IA: {e}")
+        return {}
 
 def cargar_datos():
     columnas_base = [
@@ -154,11 +150,10 @@ def extraer_datos_web(url):
             
         sopa = BeautifulSoup(respuesta.text, 'html.parser')
         
-        titulo_texto = "Propiedad Zonaprop"
-        descripcion_aviso = ""
-        precio = m2_tot = m2_cub = ambientes = banos = toilettes = 0
-        barrio = piso = antiguedad_web = disposicion = orientacion = balcon = ""
+        descripcion_limpia = ""
+        texto_para_ia = ""
 
+        # Buscamos los datos ocultos de Zonaprop para pasárselos completos a la IA
         next_data_tag = sopa.find("script", id="__NEXT_DATA__")
         if next_data_tag:
             try:
@@ -167,136 +162,48 @@ def extraer_datos_web(url):
                 props = page_props.get("posting", {}) or page_props.get("initialPosting", {})
                 
                 if props:
-                    titulo_texto = props.get("title", titulo_texto)
                     descripcion_aviso = props.get("plainDescription", "") or props.get("description", "")
+                    descripcion_limpia = BeautifulSoup(descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n"), "html.parser").get_text(separator="\n").strip()
                     
-                    precio_val = props.get("priceOperations", [{}])
-                    if precio_val:
-                        precios_list = precio_val[0].get("prices", [])
-                        if precios_list: precio = int(precios_list[0].get("amount", 0))
-                    
-                    features = props.get("mainFeatures", [])
-                    if isinstance(features, dict): features = list(features.values())
-                    
-                    for feat in features:
-                        f_str = str(feat).upper()
-                        
-                        if "M²" in f_str or "METROS" in f_str:
-                            m2_match = re.search(r'(\d+)', f_str)
-                            if m2_match:
-                                val = int(m2_match.group(1))
-                                if "CUB" in f_str: m2_cub = val
-                                elif "TOT" in f_str: m2_tot = val
-                                elif m2_tot == 0: m2_tot = val
-                        if "AMB" in f_str:
-                            amb_match = re.search(r'(\d+)', f_str)
-                            if amb_match: ambientes = int(amb_match.group(1))
-                            
-                        if "BAÑO" in f_str or "BATHROOM" in f_str:
-                            num = re.search(r'(\d+)', f_str)
-                            if num: banos = int(num.group(1))
-                        if "TOILET" in f_str:
-                            num = re.search(r'(\d+)', f_str)
-                            if num: toilettes = int(num.group(1))
-                            
-                        if "BALC" in f_str: balcon = "Balcón"
-                        if "CONTRAFRENTE" in f_str: disposicion = "Contrafrente"
-                        elif "FRENTE" in f_str: disposicion = "Frente"
-                        elif "LATERAL" in f_str: disposicion = "Lateral"
-
-                        if "NORESTE" in f_str: orientacion = "NE"
-                        elif "NOROESTE" in f_str: orientacion = "NO"
-                        elif "SURESTE" in f_str: orientacion = "SE"
-                        elif "SUROESTE" in f_str: orientacion = "SO"
-                        elif "NORTE" in f_str: orientacion = "N"
-                        elif "SUR" in f_str: orientacion = "S"
-                        elif "ESTE" in f_str: orientacion = "E"
-                        elif "OESTE" in f_str: orientacion = "O"
-
-                        if "A ESTRENAR" in f_str: antiguedad_web = "A estrenar"
-                        elif "POZO" in f_str: antiguedad_web = "Pozo"
-                        elif "CONSTRUCCI" in f_str: antiguedad_web = "En construcción"
-                        elif "AÑO" in f_str:
-                            a_match = re.search(r'(\d+)', f_str)
-                            if a_match: antiguedad_web = f"{a_match.group(1)} años"
-
-                    location = props.get("location", {})
-                    b_name = location.get("parent", {}).get("name", "") or location.get("name", "")
-                    if b_name: barrio = b_name.title()
-            except Exception:
+                    # Armamos un super-bloque de texto con todo masticado para que la IA extraiga
+                    texto_para_ia = f"TÍTULO: {props.get('title', '')}\n"
+                    texto_para_ia += f"DATOS DE PRECIO: {props.get('priceOperations', [])}\n"
+                    texto_para_ia += f"CARACTERÍSTICAS PRINCIPALES: {props.get('mainFeatures', [])}\n"
+                    texto_para_ia += f"UBICACIÓN: {props.get('location', {})}\n"
+                    texto_para_ia += f"DESCRIPCIÓN COMPLETA: {descripcion_limpia}"
+            except:
                 pass
 
-        if not descripcion_aviso:
+        # Respaldo por si no encontramos el script oculto
+        if not descripcion_limpia:
             div_desc = sopa.find(attrs={"data-qa": "posting-description"}) or sopa.find(id=re.compile("description", re.I))
             if div_desc:
                 for br in div_desc.find_all("br"): br.replace_with("\n")
-                for p in div_desc.find_all("p"): p.insert_after("\n")
-                descripcion_aviso = div_desc.get_text(separator=" ").strip()
+                descripcion_limpia = div_desc.get_text(separator="\n").strip()
+                texto_para_ia = f"TÍTULO: {sopa.title.string}\nDESCRIPCIÓN COMPLETA: {descripcion_limpia}"
 
-        descripcion_limpia = ""
-        if descripcion_aviso:
-            descripcion_aviso = descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n")
-            descripcion_limpia = BeautifulSoup(descripcion_aviso, "html.parser").get_text(separator="\n")
-            descripcion_limpia = re.sub(r'\n+', '\n', descripcion_limpia).strip()
+        # Limitamos a 6000 caracteres para no romper el límite de Groq
+        texto_para_ia = texto_para_ia[:6000]
 
-        texto_completo = f"{titulo_texto} {descripcion_limpia} {sopa.get_text(separator=' ')}".upper()
+        # --- AQUÍ SUCEDE LA MAGIA: Delegamos TODA la extracción a la IA ---
+        ia_data = extraer_todo_con_ia(texto_para_ia)
+        if not ia_data: ia_data = {}
 
-        if banos == 0:
-            b_match = re.search(r'(\d+)\s*BAÑO', texto_completo)
-            if b_match: banos = int(b_match.group(1))
-        if toilettes == 0:
-            t_match = re.search(r'(\d+)\s*TOILET', texto_completo)
-            if t_match: toilettes = int(t_match.group(1))
+        # Mapeo seguro de datos devueltos por la IA
+        try: precio = int(ia_data.get("precio", 0))
+        except: precio = 0
+        try: m2_tot = int(ia_data.get("m2_totales", 0))
+        except: m2_tot = 0
+        try: m2_cub = int(ia_data.get("m2_cubiertos", 0))
+        except: m2_cub = 0
+        try: ambientes = int(ia_data.get("ambientes", 0))
+        except: ambientes = 0
+        try: banos = int(ia_data.get("banos", 0))
+        except: banos = 0
+        try: toilettes = int(ia_data.get("toilettes", 0))
+        except: toilettes = 0
 
-        if not balcon and re.search(r'\bBALC[OÓ]N\b', texto_completo): balcon = "Balcón"
-        
-        if not disposicion:
-            if re.search(r'\bCONTRAFRENTE\b', texto_completo): disposicion = "Contrafrente"
-            elif re.search(r'\bFRENTE\b', texto_completo): disposicion = "Frente"
-            elif re.search(r'\bLATERAL\b', texto_completo): disposicion = "Lateral"
-
-        if not orientacion:
-            if re.search(r'\bNORESTE\b', texto_completo): orientacion = "NE"
-            elif re.search(r'\bNOROESTE\b', texto_completo): orientacion = "NO"
-            elif re.search(r'\bSURESTE\b', texto_completo): orientacion = "SE"
-            elif re.search(r'\bSUROESTE\b', texto_completo): orientacion = "SO"
-            elif re.search(r'\bORIENTACI[OÓ]N NORTE\b|\bAL NORTE\b', texto_completo): orientacion = "N"
-            elif re.search(r'\bORIENTACI[OÓ]N SUR\b|\bAL SUR\b', texto_completo): orientacion = "S"
-            elif re.search(r'\bORIENTACI[OÓ]N ESTE\b|\bAL ESTE\b', texto_completo): orientacion = "E"
-            elif re.search(r'\bORIENTACI[OÓ]N OESTE\b|\bAL OESTE\b', texto_completo): orientacion = "O"
-
-        # LLAMADA A LA IA (ÚNICA FUENTE DE VERDAD PARA EL PISO)
-        ia_data = resumir_con_ia(descripcion_limpia)
-        resumen_ia = ia_data["resumen"]
-        piso = str(ia_data.get("piso", "no menciona")).strip()
-        
-        if not piso or piso == "":
-            piso = "no menciona"
-
-        antiguedad_final = antiguedad_web if antiguedad_web else ia_data.get("antiguedad", "no menciona")
-        if not antiguedad_final or antiguedad_final.strip() == "": 
-            antiguedad_final = "no menciona"
-
-        if not descripcion_limpia:
-            descripcion_limpia = "No se pudo extraer la descripción."
-            resumen_ia = "Sin descripción disponible."
-
-        if precio == 0:
-            precio_match = re.search(r'(?:USD|U\$S|US\$|\$)\s*([\d\.]+)', texto_completo)
-            if precio_match: precio = int(precio_match.group(1).replace('.', ''))
-
-        if m2_tot == 0:
-            m2_t_match = re.search(r'(\d+)\s*(?:M2|M²|METROS)\s*TOT', texto_completo)
-            if m2_t_match: m2_tot = int(m2_t_match.group(1))
-            else:
-                m2_gen = re.search(r'(\d+)\s*(?:M2|M²|METROS)', texto_completo)
-                if m2_gen: m2_tot = int(m2_gen.group(1))
-
-        if m2_cub == 0:
-            m2_c_match = re.search(r'(\d+)\s*(?:M2|M²|METROS)\s*CUB', texto_completo)
-            if m2_c_match: m2_cub = int(m2_c_match.group(1))
-            else: m2_cub = m2_tot
-
+        # Autocorrección matemática base
         if m2_cub > m2_tot: m2_cub = m2_tot
         if m2_tot > 0 and m2_cub == 0: m2_cub = m2_tot
 
@@ -304,25 +211,28 @@ def extraer_datos_web(url):
         m2_pond = m2_cub + (m2_descubiertos * 0.5)
         usd_m2 = round(precio / m2_pond) if m2_pond > 0 and precio > 0 else 0
 
-        if ambientes == 0:
-            if "monoambiente" in url.lower(): ambientes = 1
-            else:
-                amb_match = re.search(r'(\d+)\s*AMB', texto_completo)
-                if amb_match: ambientes = int(amb_match.group(1))
+        # Datos de texto devueltos por la IA
+        barrio = str(ia_data.get("barrio", "CABA")).title()
+        piso = str(ia_data.get("piso", "no menciona")).strip()
+        antiguedad = str(ia_data.get("antiguedad", "no menciona")).strip()
+        disposicion = str(ia_data.get("disposicion", "")).strip()
+        orientacion = str(ia_data.get("orientacion", "")).strip()
+        balcon = str(ia_data.get("balcon", "")).strip()
+        resumen_ia = str(ia_data.get("resumen", "")).strip()
 
-        if not barrio:
-            barrios_caba = ["VILLA URQUIZA", "BELGRANO", "PALERMO", "CABALLITO", "RECOLETA", "NUÑEZ", "SAAVEDRA", "COGHLAN", "VILLA CRESPO", "ALMAGRO", "COLEGIALES", "CHACARITA", "DEVOTO", "VILLA DEL PARQUE"]
-            for b in barrios_caba:
-                if b in texto_completo or b.replace(" ", "-") in url.lower():
-                    barrio = b.title()
-                    break
+        # Limpieza visual final
+        if piso.lower() in ["none", "", "null"]: piso = "no menciona"
+        if antiguedad.lower() in ["none", "", "null"]: antiguedad = "no menciona"
+        if disposicion.lower() in ["no menciona", "none", "null"]: disposicion = ""
+        if orientacion.lower() in ["no menciona", "none", "null"]: orientacion = ""
+        if balcon.lower() in ["no menciona", "none", "null"]: balcon = ""
         
         return {
-            "Barrio": barrio if barrio else "CABA", "Piso": piso, "Ambientes": ambientes,
+            "Barrio": barrio, "Piso": piso, "Ambientes": ambientes,
             "Baños": banos, "Toilettes": toilettes,
             "Disposición": disposicion, "Orientación": orientacion, "Balcón": balcon,
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
-            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Antigüedad": antiguedad_final, 
+            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Antigüedad": antiguedad, 
             "Link": url, "Resumen IA": resumen_ia, "Notas Personales": "", "Descripción Completa": descripcion_limpia, "Historial Precio": ""
         }
     except Exception:
@@ -436,25 +346,20 @@ if not df.empty:
                         guardar_datos(df)
                         st.rerun()
                 
-                barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
-                ambientes = int(row['Ambientes']) if pd.notna(row['Ambientes']) and row['Ambientes'] != 0 else "?"
-                badge = "<span style='background:#ffebee; color:#c62828; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold; margin-left:6px; vertical-align:middle;'>🔥 BAJÓ</span>" if (0 < precio_actual < primer_precio) else ""
-                
-                st.markdown(f"<div style='margin-top:4px; margin-bottom:8px;'><b>{barrio}</b> • {ambientes} Amb.{badge}</div>", unsafe_allow_html=True)
-                
                 piso_val = str(row.get('Piso', '')).strip()
                 if piso_val.lower() == 'nan' or piso_val == '': piso_val = 'no menciona'
                 elif piso_val.endswith('.0'): piso_val = piso_val[:-2]
                 if piso_val == '0': piso_val = 'PB'
-
-                antig_val = str(row.get('Antigüedad', '')).strip()
-                if antig_val.lower() == 'nan' or antig_val == '' or antig_val.lower() == 'contactar agente':
-                    antig_val = 'no menciona'
-
-                valor_mostrar_piso = piso_val if str(piso_val).lower().startswith("piso") else f"Piso: {piso_val}"
-                valor_mostrar_ant = antig_val if str(antig_val).lower().startswith("antig") else f"Antigüedad: {antig_val}"
                 
-                c_piso, c_ant = st.columns(2)
+                barrio = row['Barrio'] if row['Barrio'] else "Barrio a confirmar"
+                ambientes = int(row['Ambientes']) if pd.notna(row['Ambientes']) and row['Ambientes'] != 0 else "?"
+                badge = "<span style='background:#ffebee; color:#c62828; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold; margin-left:6px; vertical-align:middle;'>🔥 BAJÓ</span>" if (0 < precio_actual < primer_precio) else ""
+                
+                valor_mostrar_piso = piso_val if str(piso_val).lower().startswith("piso") else f"Piso: {piso_val}"
+                
+                c_info, c_piso = st.columns([6, 4])
+                with c_info:
+                    st.markdown(f"<div style='margin-top:6px; margin-bottom:8px;'><b>{barrio}</b> • {ambientes} Amb.{badge}</div>", unsafe_allow_html=True)
                 with c_piso:
                     nuevo_piso = st.text_input("Piso", value=valor_mostrar_piso, key=f"piso_{idx}", label_visibility="collapsed")
                     if nuevo_piso != valor_mostrar_piso:
@@ -462,14 +367,7 @@ if not df.empty:
                         df.at[idx, "Piso"] = dato_limpio
                         guardar_datos(df)
                         st.rerun()
-                with c_ant:
-                    nuevo_ant = st.text_input("Antigüedad", value=valor_mostrar_ant, key=f"ant_{idx}", label_visibility="collapsed")
-                    if nuevo_ant != valor_mostrar_ant:
-                        dato_limpio = nuevo_ant.replace("Antigüedad: ", "").replace("Antigüedad:", "").strip()
-                        df.at[idx, "Antigüedad"] = dato_limpio
-                        guardar_datos(df)
-                        st.rerun()
-
+                
                 m2_tot = int(row['M2 Totales'])
                 m2_cub = int(row['M2 Cubiertos'])
                 m2_desc = m2_tot - m2_cub if m2_tot > m2_cub else 0
@@ -494,6 +392,23 @@ if not df.empty:
                     detalles_html += f"🧭 {' | '.join(extras)}"
                 
                 st.markdown(f"<div style='font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 12px;'>{detalles_html}</div>", unsafe_allow_html=True)
+                
+                antig_val = str(row.get('Antigüedad', '')).strip()
+                if antig_val.lower() == 'nan' or antig_val == '' or antig_val.lower() == 'contactar agente':
+                    antig_val = 'no menciona'
+
+                valor_mostrar_ant = antig_val if str(antig_val).lower().startswith("antig") else f"Antigüedad: {antig_val}"
+                
+                c_ant_lbl, c_ant_inp = st.columns([4, 6])
+                with c_ant_lbl:
+                    st.markdown("<div style='margin-top:7px; font-size:13px; font-weight:bold; color:#555;'>🏗️ Antigüedad:</div>", unsafe_allow_html=True)
+                with c_ant_inp:
+                    nuevo_ant = st.text_input("Antigüedad", value=valor_mostrar_ant, key=f"ant_{idx}", label_visibility="collapsed")
+                    if nuevo_ant != valor_mostrar_ant:
+                        dato_limpio = nuevo_ant.replace("Antigüedad: ", "").replace("Antigüedad:", "").strip()
+                        df.at[idx, "Antigüedad"] = dato_limpio
+                        guardar_datos(df)
+                        st.rerun()
 
                 resumen_ia = str(row.get('Resumen IA', ''))
                 if resumen_ia != "":
@@ -533,26 +448,4 @@ if not df.empty:
                         with st.spinner("Descargando..."):
                             link_actual = row["Link"]
                             if link_actual and str(link_actual).startswith("http"):
-                                datos_frescos = extraer_dev_web = extraer_datos_web(link_actual)
-                                if datos_frescos:
-                                    df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
-                                    df.at[idx, "Resumen IA"] = datos_frescos["Resumen IA"]
-                                    
-                                    precio_nuevo = datos_frescos["Precio (USD)"]
-                                    precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
-                                    
-                                    if precio_nuevo > 0 and precio_nuevo != precio_viejo:
-                                        hoy = datetime.now().strftime("%d/%m/%Y")
-                                        historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
-                                        registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
-                                        
-                                        df.at[idx, "Precio (USD)"] = precio_nuevo
-                                        if historial_previo == "":
-                                            df.at[idx, "Historial Precio"] = registro_hoy
-                                        else:
-                                            df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
-                                    
-                                    guardar_datos(df)
-                                    st.rerun()
-else:
-    st.info("No tenés propiedades cargadas. Pegá un link arriba para empezar.")
+                                datos_frescos = extraer
