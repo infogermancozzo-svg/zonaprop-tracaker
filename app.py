@@ -61,7 +61,7 @@ Estructura JSON requerida:
         
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="openai/GPT-OSS 120B",
+            model="openai/openai/gpt-oss-120b", 
             temperature=0.1
         )
         
