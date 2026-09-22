@@ -39,37 +39,24 @@ def extraer_todo_con_ia(texto_crudo):
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un tasador inmobiliario experto. Te estoy pasando TODO EL TEXTO VISIBLE de una página web inmobiliaria (copiado en bruto, puede estar desordenado). Tu objetivo es encontrar los datos, hacer los cálculos y devolver ÚNICAMENTE un objeto JSON.
+        # --- NUEVO PROMPT DE DIAGNÓSTICO PROFUNDO ---
+        prompt = f"""Actuá como un analista inmobiliario. Te voy a pasar todo el texto en bruto extraído de un link de Zonaprop.
+Tu objetivo es analizarlo profundamente y devolverme ÚNICAMENTE un objeto JSON.
 
-REGLAS VITALES: 
-- RESPONDER SÓLO CON EL JSON. NADA DE TEXTO EXTRA.
-- LOS NÚMEROS DEBEN SER ENTEROS PUROS (ej: 120000). PROHIBIDO USAR PUNTOS O SÍMBOLOS EN LOS PRECIOS.
-
-FÓRMULAS MATEMÁTICAS A APLICAR:
-1. M2 Descubiertos = M2 Totales - M2 Cubiertos. (Si no aclara descubiertos, asumí 0).
-2. M2 Ponderados = M2 Cubiertos + (M2 Descubiertos * 0.5)
-3. USD_m2_promedio = Precio / M2 Ponderados (Solo número entero).
+REGLAS VITALES:
+- RESPONDER SÓLO CON EL JSON. NADA DE TEXTO EXTRA AFUERA DE LAS LLAVES.
+- Los campos numéricos dejamelos en 0 si no los encontrás, pero el campo "resumen" debe ser súper exhaustivo.
 
 Estructura JSON requerida:
 {{
-    "barrio": "Barrio (ej. 'Palermo'). Si no dice, 'CABA'.",
-    "precio": Número entero puro (ej. 95000). Buscá el símbolo USD, US$o U$S. Si no dice, 0,
-    "m2_totales": Número entero puro. Si no dice, 0,
-    "m2_cubiertos": Número entero puro. Si no dice, 0,
-    "m2_ponderados": Número entero (tu cálculo). Si faltan datos, 0,
-    "usd_m2_promedio": Número entero (tu cálculo). Si faltan datos, 0,
-    "ambientes": Número entero. Si no dice, 0,
-    "banos": Número entero. Si no dice, 0,
-    "toilettes": Número entero. Si no dice, 0,
-    "piso": "Piso de la unidad. DEDUCILO del texto (ej. si dice 'excelente vista al 6to', poné '6'). Si no hay forma de saberlo, poné 'no menciona'.",
-    "antiguedad": "Años de antigüedad. Si dice a estrenar, 'A estrenar'. Si es pozo, 'Pozo'. Si no dice, 'no menciona'.",
-    "disposicion": "'Frente', 'Contrafrente', 'Lateral', o 'no menciona'.",
-    "orientacion": "Punto cardinal ('N', 'S', 'E', 'O', 'NE', 'NO', 'SE', 'SO') o 'no menciona'.",
-    "balcon": "'Balcón' si tiene, sino 'no menciona'.",
-    "resumen": "2 o 3 renglones sobre ventajas y características."
+    "precio": Número entero (ej. 95000),
+    "m2_totales": Número entero,
+    "m2_cubiertos": Número entero,
+    "ambientes": Número entero,
+    "resumen": "REPORTE EXHAUSTIVO: Hacé un resumen detallado destacando obligatoriamente lo siguiente: Barrio, Precio, Metros totales, Metros cubiertos, Metros descubiertos, Cantidad de baños y/o toilettes, si tiene balcón, patio o terraza, tu deducción rápida del piso en que se encuentra, antigüedad, orientación, y si es frente o contrafrente. REGLA DE ORO: Si no podés deducir o encontrar alguna de esta información en el texto, debés explicitarlo claramente (ej: 'No se especifica en qué piso se encuentra' o 'No menciona la antigüedad'). Todo este reporte redactado debe ir en este único campo."
 }}
 
---- TEXTO COMPLETO DE LA PÁGINA WEB ---
+--- TEXTO COMPLETO EXTRAÍDO DEL LINK DEL AVISO ---
 {texto_crudo[:8000]}"""
         
         chat_completion = client.chat.completions.create(
@@ -164,17 +151,12 @@ def extraer_datos_web(url):
             
         sopa = BeautifulSoup(respuesta.text, 'html.parser')
         
-        # --- NUEVO ENFOQUE: EXTRAER TODO EL TEXTO VISIBLE DE LA PÁGINA ---
-        # Primero limpiamos código interno que ensucia (scripts de seguimiento, menús móviles, etc)
         for element in sopa(["script", "style", "noscript", "nav", "footer"]):
             element.extract()
             
-        # Extraemos el texto crudo tal como lo vería un humano en la pantalla
         texto_visible = sopa.get_text(separator='\n', strip=True)
-        # Reducimos los múltiples saltos de línea para ahorrar tokens
         texto_visible = re.sub(r'\n+', '\n', texto_visible)
         
-        # Buscamos también la descripción HTML original para guardarla en el expander de tu app
         descripcion_limpia = ""
         div_desc = sopa.find(attrs={"data-qa": "posting-description"}) or sopa.find(id=re.compile("description", re.I))
         if div_desc:
@@ -183,39 +165,30 @@ def extraer_datos_web(url):
         if not descripcion_limpia:
             descripcion_limpia = "Ver publicación original."
 
-        # Mandamos el texto completo de la página a la IA (cortamos en 8000 por seguridad)
         ia_data, raw_ia_response = extraer_todo_con_ia(texto_visible[:8000])
         if not ia_data: ia_data = {}
 
         precio = parse_num_seguro(ia_data.get("precio", 0))
         m2_tot = parse_num_seguro(ia_data.get("m2_totales", 0))
         m2_cub = parse_num_seguro(ia_data.get("m2_cubiertos", 0))
-        m2_pond = parse_num_seguro(ia_data.get("m2_ponderados", 0))
-        usd_m2 = parse_num_seguro(ia_data.get("usd_m2_promedio", 0))
         ambientes = parse_num_seguro(ia_data.get("ambientes", 0))
-        banos = parse_num_seguro(ia_data.get("banos", 0))
-        toilettes = parse_num_seguro(ia_data.get("toilettes", 0))
-
-        barrio = str(ia_data.get("barrio", "CABA")).title()
-        piso = str(ia_data.get("piso", "no menciona")).strip()
-        antiguedad = str(ia_data.get("antiguedad", "no menciona")).strip()
-        disposicion = str(ia_data.get("disposicion", "")).strip()
-        orientacion = str(ia_data.get("orientacion", "")).strip()
-        balcon = str(ia_data.get("balcon", "")).strip()
-        resumen_ia = str(ia_data.get("resumen", "Sin descripción disponible.")).strip()
-
-        if piso.lower() in ["none", "", "null", "no menciona"]: piso = "no menciona"
-        if antiguedad.lower() in ["none", "", "null", "no menciona"]: antiguedad = "no menciona"
-        if disposicion.lower() in ["no menciona", "none", "null"]: disposicion = ""
-        if orientacion.lower() in ["no menciona", "none", "null"]: orientacion = ""
-        if balcon.lower() in ["no menciona", "none", "null"]: balcon = ""
         
+        # Dejamos que la app haga la matemática básica si la IA encontró los metros y el precio
+        if m2_cub > m2_tot: m2_cub = m2_tot
+        if m2_tot > 0 and m2_cub == 0: m2_cub = m2_tot
+        m2_descubiertos = m2_tot - m2_cub if m2_tot > m2_cub else 0
+        m2_pond = m2_cub + (m2_descubiertos * 0.5)
+        usd_m2 = round(precio / m2_pond) if m2_pond > 0 and precio > 0 else 0
+
+        resumen_ia = str(ia_data.get("resumen", "La IA no devolvió un resumen.")).strip()
+        
+        # Conservamos las variables vacías para que no se rompan las cajas editables de la interfaz
         return {
-            "Barrio": barrio if barrio else "CABA", "Piso": piso, "Ambientes": ambientes,
-            "Baños": banos, "Toilettes": toilettes,
-            "Disposición": disposicion, "Orientación": orientacion, "Balcón": balcon,
+            "Barrio": "CABA", "Piso": "no menciona", "Ambientes": ambientes,
+            "Baños": 0, "Toilettes": 0,
+            "Disposición": "", "Orientación": "", "Balcón": "",
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
-            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Antigüedad": antiguedad, 
+            "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Antigüedad": "no menciona", 
             "Link": url, "Resumen IA": resumen_ia, "Notas Personales": "", "Descripción Completa": descripcion_limpia, 
             "Historial Precio": "", "Respuesta Cruda IA": raw_ia_response
         }
@@ -238,7 +211,7 @@ with st.container(border=True):
 
 if btn_agregar:
     if url_input:
-        with st.spinner("Leyendo página completa y procesando con IA..."):
+        with st.spinner("Leyendo página y redactando reporte de IA..."):
             datos = extraer_datos_web(url_input)
             if datos:
                 if datos["Precio (USD)"] > 0:
@@ -274,7 +247,6 @@ if not df.empty:
                             texto_visible = sopa.get_text(separator='\n', strip=True)
                             texto_visible = re.sub(r'\n+', '\n', texto_visible)
                             
-                            # Para el validador masivo hacemos una llamada rápida solo para ver si cambió el precio
                             ia_rapida, _ = extraer_todo_con_ia(texto_visible[:5000])
                             if ia_rapida:
                                 precio_nuevo = parse_num_seguro(ia_rapida.get("precio", 0))
@@ -388,7 +360,8 @@ if not df.empty:
 
                 resumen_ia = str(row.get('Resumen IA', ''))
                 if resumen_ia != "":
-                    st.markdown(f"<div style='font-size: 12px; color: #1e3a5f; background-color: #e8f4fd; padding: 8px; border-radius: 5px; margin-bottom: 8px; border-left: 3px solid #1E88E5;'>✨ <b>Resumen IA:</b> {resumen_ia}</div>", unsafe_allow_html=True)
+                    # Eliminamos el height límite para que se lea todo el reporte
+                    st.markdown(f"<div style='font-size: 13px; color: #1e3a5f; background-color: #e8f4fd; padding: 12px; border-radius: 5px; margin-bottom: 8px; border-left: 3px solid #1E88E5; line-height: 1.6;'>✨ <b>Reporte IA:</b><br>{resumen_ia}</div>", unsafe_allow_html=True)
 
                 nuevas_notas = st.text_area("Notas", value=str(row.get('Notas Personales', '')), height=68, key=f"notas_{idx}", label_visibility="collapsed", placeholder="📝 Escribí tus notas personales acá...")
                 if nuevas_notas != str(row.get('Notas Personales', '')):
@@ -427,7 +400,7 @@ if not df.empty:
                     st.link_button("🔗 Ver Aviso", row['Link'], use_container_width=True)
                 with col_acts:
                     if st.button("🔄 Actualizar", key=f"btn_act_{idx}", use_container_width=True):
-                        with st.spinner("Descargando página completa con IA..."):
+                        with st.spinner("Generando nuevo reporte con IA..."):
                             link_actual = row["Link"]
                             if link_actual and str(link_actual).startswith("http"):
                                 datos_frescos = extraer_datos_web(link_actual)
@@ -455,14 +428,8 @@ if not df.empty:
                                         df.at[idx, "M2 Cubiertos"] = datos_frescos["M2 Cubiertos"]
                                         df.at[idx, "M2 Ponderados"] = datos_frescos["M2 Ponderados"]
                                         df.at[idx, "USD/m2 Promedio"] = datos_frescos["USD/m2 Promedio"]
-                                        
                                         df.at[idx, "Ambientes"] = datos_frescos["Ambientes"]
-                                        df.at[idx, "Baños"] = datos_frescos["Baños"]
-                                        df.at[idx, "Toilettes"] = datos_frescos["Toilettes"]
-                                        df.at[idx, "Disposición"] = datos_frescos["Disposición"]
-                                        df.at[idx, "Orientación"] = datos_frescos["Orientación"]
-                                        df.at[idx, "Balcón"] = datos_frescos["Balcón"]
-                                    
+                                        
                                     guardar_datos(df)
                                     st.rerun()
 else:
