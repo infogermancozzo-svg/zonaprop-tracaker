@@ -24,49 +24,54 @@ def format_precio(num):
         return "$0"
 
 def parse_num_seguro(valor):
-    # Por si la IA responde "120.000 USD" en lugar de 120000, esto asegura que el sistema no colapse
     try:
         if valor is None or str(valor).strip() == "": return 0
-        return int(re.sub(r'[^\d]', '', str(valor)))
+        val_str = str(valor).strip()
+        # Elimina decimales (,00 o .00) para evitar que se conviertan en millones
+        val_str = re.sub(r'[.,]\d{2}$', '', val_str)
+        # Extrae solo los números
+        numeros = re.sub(r'[^\d]', '', val_str)
+        return int(numeros) if numeros else 0
     except:
         return 0
 
-# --- CEREBRO 100% IA: EXTRACCIÓN Y CÁLCULOS MATEMÁTICOS ---
 def extraer_todo_con_ia(texto_crudo):
     if not GROQ_API_KEY or not texto_crudo.strip():
-        return {}
+        return {}, "⚠️ Faltan datos o API Key."
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un tasador inmobiliario experto y calculador. Tu objetivo es leer los datos de un aviso, extraer la información, REALIZAR LOS CÁLCULOS MATEMÁTICOS NECESARIOS, y devolver ÚNICAMENTE un objeto JSON válido.
+        prompt = f"""Actuá como un tasador inmobiliario experto. Leé el aviso, hace cálculos matemáticos y devolvé ÚNICAMENTE un objeto JSON válido.
 
-FÓRMULAS MATEMÁTICAS QUE DEBES APLICAR MENTALMENTE:
-1. M2 Descubiertos = M2 Totales - M2 Cubiertos (Si M2 Cubiertos es mayor o igual a Totales, los descubiertos son 0).
+REGLAS VITALES: 
+- RESPONDER SÓLO CON EL JSON. NADA DE TEXTO EXTRA.
+- LOS NÚMEROS DEBEN SER ENTEROS PUROS (ej: 120000). PROHIBIDO USAR PUNTOS O SÍMBOLOS EN LOS PRECIOS.
+
+FÓRMULAS MATEMÁTICAS A APLICAR:
+1. M2 Descubiertos = M2 Totales - M2 Cubiertos.
 2. M2 Ponderados = M2 Cubiertos + (M2 Descubiertos * 0.5)
-3. USD/m2 Promedio = Precio / M2 Ponderados (Redondeado a número entero).
-
-REGLA VITAL: RESPONDER ESTRICTAMENTE EN ESPAÑOL Y ÚNICAMENTE CON EL JSON.
+3. USD_m2_promedio = Precio / M2 Ponderados (Solo número entero).
 
 Estructura JSON requerida:
 {{
-    "barrio": "Nombre del barrio (ej. 'Palermo'). Si no dice, poné 'CABA'.",
-    "precio": Número entero del precio en USD (ej. 95000). Si no dice, 0,
-    "m2_totales": Número entero. Si no dice, 0,
-    "m2_cubiertos": Número entero. Si no dice, 0,
-    "m2_ponderados": Número (resultado de tu cálculo matemático). Si faltan datos, 0,
-    "usd_m2_promedio": Número entero (resultado de tu cálculo matemático). Si faltan datos, 0,
+    "barrio": "Barrio (ej. 'Palermo'). Si no dice, 'CABA'.",
+    "precio": Número entero puro (ej. 95000). Si no dice, 0,
+    "m2_totales": Número entero puro. Si no dice, 0,
+    "m2_cubiertos": Número entero puro. Si no dice, 0,
+    "m2_ponderados": Número entero (tu cálculo). Si no se puede calcular, 0,
+    "usd_m2_promedio": Número entero (tu cálculo). Si no se puede, 0,
     "ambientes": Número entero. Si no dice, 0,
-    "banos": Número entero de baños. Si no dice, 0,
-    "toilettes": Número entero de toilettes. Si no dice, 0,
-    "piso": "Piso exacto de la unidad (ej. '3', 'PB'). PROHIBIDO adivinar por la cantidad total de pisos del edificio. Si no dice, 'no menciona'.",
-    "antiguedad": "Años de antigüedad (ej. '10 años'). Si dice a estrenar, 'A estrenar'. Si es pozo, 'Pozo'. Si no dice, 'no menciona'.",
+    "banos": Número entero. Si no dice, 0,
+    "toilettes": Número entero. Si no dice, 0,
+    "piso": "Piso de la unidad. Podes deducirlo por contexto si el aviso da pistas claras. Si es imposible saberlo, 'no menciona'.",
+    "antiguedad": "Años de antigüedad. Si dice a estrenar, 'A estrenar'. Si es pozo, 'Pozo'. Si no dice, 'no menciona'.",
     "disposicion": "'Frente', 'Contrafrente', 'Lateral', o 'no menciona'.",
     "orientacion": "Punto cardinal ('N', 'S', 'E', 'O', 'NE', 'NO', 'SE', 'SO') o 'no menciona'.",
-    "balcon": "'Balcón' si tiene explícitamente, sino 'no menciona'.",
-    "resumen": "2 o 3 renglones fluidos sobre características físicas y ventajas."
+    "balcon": "'Balcón' si tiene, sino 'no menciona'.",
+    "resumen": "2 o 3 renglones sobre ventajas y características."
 }}
 
-Datos en bruto del aviso a analizar:
+Datos del aviso:
 {texto_crudo[:6000]}"""
         
         chat_completion = client.chat.completions.create(
@@ -77,23 +82,28 @@ Datos en bruto del aviso a analizar:
         
         respuesta = chat_completion.choices[0].message.content.strip()
         
-        respuesta = re.sub(r'^```json\s*', '', respuesta)
-        respuesta = re.sub(r'^```\s*', '', respuesta)
-        respuesta = re.sub(r'\s*```$', '', respuesta)
+        # Limpieza de bloques de código markdown
+        json_limpio = re.sub(r'^```json\s*', '', respuesta)
+        json_limpio = re.sub(r'^```\s*', '', json_limpio)
+        json_limpio = re.sub(r'\s*```$', '', json_limpio)
         
-        return json.loads(respuesta)
+        try:
+            data = json.loads(json_limpio)
+            return data, respuesta
+        except Exception as e:
+            return {}, f"❌ ERROR PARSEANDO JSON:\n{respuesta}\n\nDetalle técnico: {str(e)}"
             
     except Exception as e:
-        print(f"Error IA: {e}")
-        return {}
+        return {}, f"❌ ERROR API GROQ: {str(e)}"
 
 def cargar_datos():
+    # SE AGREGA LA COLUMNA DE DEBUG
     columnas_base = [
         "Barrio", "Piso", "Ambientes", "Baños", "Toilettes", 
         "Disposición", "Orientación", "Balcón",
         "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "Precio (USD)", 
         "USD/m2 Promedio", "Antigüedad", "Link", "Resumen IA", "Notas Personales", 
-        "Descripción Completa", "Historial Precio"
+        "Descripción Completa", "Historial Precio", "Respuesta Cruda IA"
     ]
     if HF_TOKEN and REPO_ID:
         try:
@@ -119,7 +129,7 @@ def cargar_datos():
             
     df = df[[col for col in columnas_base if col in df.columns]]
             
-    for col in ["Barrio", "Piso", "Antigüedad", "Disposición", "Orientación", "Balcón", "Resumen IA", "Notas Personales", "Descripción Completa", "Historial Precio", "Link"]:
+    for col in ["Barrio", "Piso", "Antigüedad", "Disposición", "Orientación", "Balcón", "Resumen IA", "Notas Personales", "Descripción Completa", "Historial Precio", "Link", "Respuesta Cruda IA"]:
         df[col] = df[col].astype(object).fillna("")
         
     for col in ["Precio (USD)", "USD/m2 Promedio", "Ambientes", "Baños", "Toilettes", "M2 Totales", "M2 Cubiertos", "M2 Ponderados"]:
@@ -130,7 +140,6 @@ def cargar_datos():
     return df
 
 def guardar_datos(df):
-    # La IA hace los cálculos ahora, así que solo guardamos los datos directamente
     df = df.loc[:, ~df.columns.duplicated()]
     df.to_csv(ARCHIVO_CSV, index=False)
     
@@ -162,7 +171,6 @@ def extraer_datos_web(url):
         texto_para_ia = ""
         descripcion_limpia = ""
 
-        # Recuperamos todo el bloque de datos de Zonaprop para entregárselo a la IA
         next_data_tag = sopa.find("script", id="__NEXT_DATA__")
         if next_data_tag:
             try:
@@ -175,8 +183,8 @@ def extraer_datos_web(url):
                     descripcion_limpia = BeautifulSoup(descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n"), "html.parser").get_text(separator="\n").strip()
                     
                     texto_para_ia = f"TÍTULO: {props.get('title', '')}\n"
-                    texto_para_ia += f"DATOS DE PRECIO: {props.get('priceOperations', [])}\n"
-                    texto_para_ia += f"CARACTERÍSTICAS PRINCIPALES: {props.get('mainFeatures', [])}\n"
+                    texto_para_ia += f"PRECIO OFICIAL: {props.get('priceOperations', [])}\n"
+                    texto_para_ia += f"CARACTERÍSTICAS OFICIALES: {props.get('mainFeatures', [])}\n"
                     texto_para_ia += f"UBICACIÓN: {props.get('location', {})}\n"
                     texto_para_ia += f"DESCRIPCIÓN COMPLETA: {descripcion_limpia}"
             except:
@@ -189,8 +197,8 @@ def extraer_datos_web(url):
                 descripcion_limpia = div_desc.get_text(separator="\n").strip()
                 texto_para_ia = f"TÍTULO: {sopa.title.string}\nDESCRIPCIÓN COMPLETA: {descripcion_limpia}"
 
-        # 100% IA AL MANDO
-        ia_data = extraer_todo_con_ia(texto_para_ia)
+        # 100% IA AL MANDO (Ahora capturamos tanto el JSON como la respuesta cruda para debugear)
+        ia_data, raw_ia_response = extraer_todo_con_ia(texto_para_ia)
         if not ia_data: ia_data = {}
 
         precio = parse_num_seguro(ia_data.get("precio", 0))
@@ -222,7 +230,8 @@ def extraer_datos_web(url):
             "Disposición": disposicion, "Orientación": orientacion, "Balcón": balcon,
             "M2 Totales": m2_tot, "M2 Cubiertos": m2_cub, "M2 Ponderados": m2_pond, 
             "Precio (USD)": precio, "USD/m2 Promedio": usd_m2, "Antigüedad": antiguedad, 
-            "Link": url, "Resumen IA": resumen_ia, "Notas Personales": "", "Descripción Completa": descripcion_limpia, "Historial Precio": ""
+            "Link": url, "Resumen IA": resumen_ia, "Notas Personales": "", "Descripción Completa": descripcion_limpia, 
+            "Historial Precio": "", "Respuesta Cruda IA": raw_ia_response
         }
     except Exception:
         return None
@@ -266,7 +275,6 @@ if not df.empty:
             hoy = datetime.now().strftime("%d/%m/%Y")
             propiedades_actualizadas = 0
             
-            # EL BOTÓN GLOBAL SIGUE SIENDO RÁPIDO Y LIGERO PARA PRECIOS
             for idx, row in df.iterrows():
                 link = row["Link"]
                 if link and str(link).startswith("http"):
@@ -340,6 +348,8 @@ if not df.empty:
                 ambientes = int(row['Ambientes']) if pd.notna(row['Ambientes']) and row['Ambientes'] != 0 else "?"
                 badge = "<span style='background:#ffebee; color:#c62828; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold; margin-left:6px; vertical-align:middle;'>🔥 BAJÓ</span>" if (0 < precio_actual < primer_precio) else ""
                 
+                st.markdown(f"<div style='margin-top:4px; margin-bottom:8px;'><b>{barrio}</b> • {ambientes} Amb.{badge}</div>", unsafe_allow_html=True)
+                
                 piso_val = str(row.get('Piso', '')).strip()
                 if piso_val.lower() == 'nan' or piso_val == '': piso_val = 'no menciona'
                 elif piso_val.endswith('.0'): piso_val = piso_val[:-2]
@@ -352,9 +362,7 @@ if not df.empty:
                 valor_mostrar_piso = piso_val if str(piso_val).lower().startswith("piso") else f"Piso: {piso_val}"
                 valor_mostrar_ant = antig_val if str(antig_val).lower().startswith("antig") else f"Antigüedad: {antig_val}"
                 
-                c_info, c_piso = st.columns([6, 4])
-                with c_info:
-                    st.markdown(f"<div style='margin-top:6px; margin-bottom:8px;'><b>{barrio}</b> • {ambientes} Amb.{badge}</div>", unsafe_allow_html=True)
+                c_piso, c_ant = st.columns(2)
                 with c_piso:
                     nuevo_piso = st.text_input("Piso", value=valor_mostrar_piso, key=f"piso_{idx}", label_visibility="collapsed")
                     if nuevo_piso != valor_mostrar_piso:
@@ -362,7 +370,14 @@ if not df.empty:
                         df.at[idx, "Piso"] = dato_limpio
                         guardar_datos(df)
                         st.rerun()
-                
+                with c_ant:
+                    nuevo_ant = st.text_input("Antigüedad", value=valor_mostrar_ant, key=f"ant_{idx}", label_visibility="collapsed")
+                    if nuevo_ant != valor_mostrar_ant:
+                        dato_limpio = nuevo_ant.replace("Antigüedad: ", "").replace("Antigüedad:", "").strip()
+                        df.at[idx, "Antigüedad"] = dato_limpio
+                        guardar_datos(df)
+                        st.rerun()
+
                 m2_tot = int(row['M2 Totales'])
                 m2_cub = int(row['M2 Cubiertos'])
                 m2_desc = m2_tot - m2_cub if m2_tot > m2_cub else 0
@@ -387,17 +402,6 @@ if not df.empty:
                     detalles_html += f"🧭 {' | '.join(extras)}"
                 
                 st.markdown(f"<div style='font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 12px;'>{detalles_html}</div>", unsafe_allow_html=True)
-                
-                c_ant_lbl, c_ant_inp = st.columns([4, 6])
-                with c_ant_lbl:
-                    st.markdown("<div style='margin-top:7px; font-size:13px; font-weight:bold; color:#555;'>🏗️ Antigüedad:</div>", unsafe_allow_html=True)
-                with c_ant_inp:
-                    nuevo_ant = st.text_input("Antigüedad", value=valor_mostrar_ant, key=f"ant_{idx}", label_visibility="collapsed")
-                    if nuevo_ant != valor_mostrar_ant:
-                        dato_limpio = nuevo_ant.replace("Antigüedad: ", "").replace("Antigüedad:", "").strip()
-                        df.at[idx, "Antigüedad"] = dato_limpio
-                        guardar_datos(df)
-                        st.rerun()
 
                 resumen_ia = str(row.get('Resumen IA', ''))
                 if resumen_ia != "":
@@ -428,6 +432,13 @@ if not df.empty:
                         st.markdown(f"<div style='font-size: 12px; color: #666; max-height: 150px; overflow-y: auto;'>{desc_completa}</div>", unsafe_allow_html=True)
                     else:
                         st.write("No se encontró texto original.")
+                
+                # --- NUEVA VENTANA DE DEBUG IA ---
+                with st.expander("🤖 Ver razonamiento de la IA (Debug)"):
+                    raw_ia = str(row.get("Respuesta Cruda IA", "No hay datos de IA para esta propiedad."))
+                    if raw_ia.strip() == "":
+                        raw_ia = "No hay datos de IA guardados."
+                    st.code(raw_ia, language="json")
 
                 col_links, col_acts = st.columns(2)
                 with col_links:
@@ -439,9 +450,9 @@ if not df.empty:
                             if link_actual and str(link_actual).startswith("http"):
                                 datos_frescos = extraer_datos_web(link_actual)
                                 if datos_frescos:
-                                    # --- LA IA ACTUALIZA, PERO PROTEGE TU EDICIÓN MANUAL ---
                                     df.at[idx, "Descripción Completa"] = datos_frescos["Descripción Completa"]
                                     df.at[idx, "Resumen IA"] = datos_frescos["Resumen IA"]
+                                    df.at[idx, "Respuesta Cruda IA"] = datos_frescos["Respuesta Cruda IA"]
                                     
                                     if int(datos_frescos["Precio (USD)"]) > 0:
                                         precio_nuevo = datos_frescos["Precio (USD)"]
