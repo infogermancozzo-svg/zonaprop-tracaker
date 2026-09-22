@@ -27,9 +27,7 @@ def parse_num_seguro(valor):
     try:
         if valor is None or str(valor).strip() == "": return 0
         val_str = str(valor).strip()
-        # Elimina decimales (,00 o .00) para evitar que se conviertan en millones
         val_str = re.sub(r'[.,]\d{2}$', '', val_str)
-        # Extrae solo los números
         numeros = re.sub(r'[^\d]', '', val_str)
         return int(numeros) if numeros else 0
     except:
@@ -41,29 +39,29 @@ def extraer_todo_con_ia(texto_crudo):
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un tasador inmobiliario experto. Leé el aviso, hace cálculos matemáticos y devolvé ÚNICAMENTE un objeto JSON válido.
+        prompt = f"""Actuá como un tasador inmobiliario experto. Te estoy pasando TODO EL TEXTO VISIBLE de una página web inmobiliaria (copiado en bruto, puede estar desordenado). Tu objetivo es encontrar los datos, hacer los cálculos y devolver ÚNICAMENTE un objeto JSON.
 
 REGLAS VITALES: 
 - RESPONDER SÓLO CON EL JSON. NADA DE TEXTO EXTRA.
 - LOS NÚMEROS DEBEN SER ENTEROS PUROS (ej: 120000). PROHIBIDO USAR PUNTOS O SÍMBOLOS EN LOS PRECIOS.
 
 FÓRMULAS MATEMÁTICAS A APLICAR:
-1. M2 Descubiertos = M2 Totales - M2 Cubiertos.
+1. M2 Descubiertos = M2 Totales - M2 Cubiertos. (Si no aclara descubiertos, asumí 0).
 2. M2 Ponderados = M2 Cubiertos + (M2 Descubiertos * 0.5)
 3. USD_m2_promedio = Precio / M2 Ponderados (Solo número entero).
 
 Estructura JSON requerida:
 {{
     "barrio": "Barrio (ej. 'Palermo'). Si no dice, 'CABA'.",
-    "precio": Número entero puro (ej. 95000). Si no dice, 0,
+    "precio": Número entero puro (ej. 95000). Buscá el símbolo USD, US$o U$S. Si no dice, 0,
     "m2_totales": Número entero puro. Si no dice, 0,
     "m2_cubiertos": Número entero puro. Si no dice, 0,
-    "m2_ponderados": Número entero (tu cálculo). Si no se puede calcular, 0,
-    "usd_m2_promedio": Número entero (tu cálculo). Si no se puede, 0,
+    "m2_ponderados": Número entero (tu cálculo). Si faltan datos, 0,
+    "usd_m2_promedio": Número entero (tu cálculo). Si faltan datos, 0,
     "ambientes": Número entero. Si no dice, 0,
     "banos": Número entero. Si no dice, 0,
     "toilettes": Número entero. Si no dice, 0,
-    "piso": "Piso de la unidad. Podes deducirlo por contexto si el aviso da pistas claras. Si es imposible saberlo, 'no menciona'.",
+    "piso": "Piso de la unidad. DEDUCILO del texto (ej. si dice 'excelente vista al 6to', poné '6'). Si no hay forma de saberlo, poné 'no menciona'.",
     "antiguedad": "Años de antigüedad. Si dice a estrenar, 'A estrenar'. Si es pozo, 'Pozo'. Si no dice, 'no menciona'.",
     "disposicion": "'Frente', 'Contrafrente', 'Lateral', o 'no menciona'.",
     "orientacion": "Punto cardinal ('N', 'S', 'E', 'O', 'NE', 'NO', 'SE', 'SO') o 'no menciona'.",
@@ -71,8 +69,8 @@ Estructura JSON requerida:
     "resumen": "2 o 3 renglones sobre ventajas y características."
 }}
 
-Datos del aviso:
-{texto_crudo[:6000]}"""
+--- TEXTO COMPLETO DE LA PÁGINA WEB ---
+{texto_crudo[:8000]}"""
         
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -82,7 +80,6 @@ Datos del aviso:
         
         respuesta = chat_completion.choices[0].message.content.strip()
         
-        # Limpieza de bloques de código markdown
         json_limpio = re.sub(r'^```json\s*', '', respuesta)
         json_limpio = re.sub(r'^```\s*', '', json_limpio)
         json_limpio = re.sub(r'\s*```$', '', json_limpio)
@@ -97,7 +94,6 @@ Datos del aviso:
         return {}, f"❌ ERROR API GROQ: {str(e)}"
 
 def cargar_datos():
-    # SE AGREGA LA COLUMNA DE DEBUG
     columnas_base = [
         "Barrio", "Piso", "Ambientes", "Baños", "Toilettes", 
         "Disposición", "Orientación", "Balcón",
@@ -168,37 +164,27 @@ def extraer_datos_web(url):
             
         sopa = BeautifulSoup(respuesta.text, 'html.parser')
         
-        texto_para_ia = ""
+        # --- NUEVO ENFOQUE: EXTRAER TODO EL TEXTO VISIBLE DE LA PÁGINA ---
+        # Primero limpiamos código interno que ensucia (scripts de seguimiento, menús móviles, etc)
+        for element in sopa(["script", "style", "noscript", "nav", "footer"]):
+            element.extract()
+            
+        # Extraemos el texto crudo tal como lo vería un humano en la pantalla
+        texto_visible = sopa.get_text(separator='\n', strip=True)
+        # Reducimos los múltiples saltos de línea para ahorrar tokens
+        texto_visible = re.sub(r'\n+', '\n', texto_visible)
+        
+        # Buscamos también la descripción HTML original para guardarla en el expander de tu app
         descripcion_limpia = ""
+        div_desc = sopa.find(attrs={"data-qa": "posting-description"}) or sopa.find(id=re.compile("description", re.I))
+        if div_desc:
+            descripcion_limpia = div_desc.get_text(separator="\n").strip()
+            
+        if not descripcion_limpia:
+            descripcion_limpia = "Ver publicación original."
 
-        next_data_tag = sopa.find("script", id="__NEXT_DATA__")
-        if next_data_tag:
-            try:
-                data_json = json.loads(next_data_tag.string)
-                page_props = data_json.get("props", {}).get("pageProps", {})
-                props = page_props.get("posting", {}) or page_props.get("initialPosting", {})
-                
-                if props:
-                    descripcion_aviso = props.get("plainDescription", "") or props.get("description", "")
-                    descripcion_limpia = BeautifulSoup(descripcion_aviso.replace("<br>", "\n").replace("<br/>", "\n").replace("</p>", "\n"), "html.parser").get_text(separator="\n").strip()
-                    
-                    texto_para_ia = f"TÍTULO: {props.get('title', '')}\n"
-                    texto_para_ia += f"PRECIO OFICIAL: {props.get('priceOperations', [])}\n"
-                    texto_para_ia += f"CARACTERÍSTICAS OFICIALES: {props.get('mainFeatures', [])}\n"
-                    texto_para_ia += f"UBICACIÓN: {props.get('location', {})}\n"
-                    texto_para_ia += f"DESCRIPCIÓN COMPLETA: {descripcion_limpia}"
-            except:
-                pass
-
-        if not texto_para_ia:
-            div_desc = sopa.find(attrs={"data-qa": "posting-description"}) or sopa.find(id=re.compile("description", re.I))
-            if div_desc:
-                for br in div_desc.find_all("br"): br.replace_with("\n")
-                descripcion_limpia = div_desc.get_text(separator="\n").strip()
-                texto_para_ia = f"TÍTULO: {sopa.title.string}\nDESCRIPCIÓN COMPLETA: {descripcion_limpia}"
-
-        # 100% IA AL MANDO (Ahora capturamos tanto el JSON como la respuesta cruda para debugear)
-        ia_data, raw_ia_response = extraer_todo_con_ia(texto_para_ia)
+        # Mandamos el texto completo de la página a la IA (cortamos en 8000 por seguridad)
+        ia_data, raw_ia_response = extraer_todo_con_ia(texto_visible[:8000])
         if not ia_data: ia_data = {}
 
         precio = parse_num_seguro(ia_data.get("precio", 0))
@@ -252,7 +238,7 @@ with st.container(border=True):
 
 if btn_agregar:
     if url_input:
-        with st.spinner("Extrayendo datos y analizando con Inteligencia Artificial..."):
+        with st.spinner("Leyendo página completa y procesando con IA..."):
             datos = extraer_datos_web(url_input)
             if datos:
                 if datos["Precio (USD)"] > 0:
@@ -283,30 +269,27 @@ if not df.empty:
                         respuesta = requests.get(link, impersonate="chrome110", headers=headers, timeout=12)
                         if respuesta.status_code == 200:
                             sopa = BeautifulSoup(respuesta.text, 'html.parser')
-                            next_data_tag = sopa.find("script", id="__NEXT_DATA__")
-                            precio_nuevo = 0
-                            if next_data_tag:
-                                data_json = json.loads(next_data_tag.string)
-                                page_props = data_json.get("props", {}).get("pageProps", {})
-                                props = page_props.get("posting", {}) or page_props.get("initialPosting", {})
-                                precio_val = props.get("priceOperations", [{}])
-                                if precio_val:
-                                    precios_list = precio_val[0].get("prices", [])
-                                    if precios_list:
-                                        precio_nuevo = int(precios_list[0].get("amount", 0))
+                            for element in sopa(["script", "style", "noscript", "nav", "footer"]):
+                                element.extract()
+                            texto_visible = sopa.get_text(separator='\n', strip=True)
+                            texto_visible = re.sub(r'\n+', '\n', texto_visible)
                             
-                            precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
-                            
-                            if precio_nuevo > 0 and precio_nuevo != precio_viejo:
-                                historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
-                                registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
+                            # Para el validador masivo hacemos una llamada rápida solo para ver si cambió el precio
+                            ia_rapida, _ = extraer_todo_con_ia(texto_visible[:5000])
+                            if ia_rapida:
+                                precio_nuevo = parse_num_seguro(ia_rapida.get("precio", 0))
+                                precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
                                 
-                                df.at[idx, "Precio (USD)"] = precio_nuevo
-                                if historial_previo == "":
-                                    df.at[idx, "Historial Precio"] = registro_hoy
-                                else:
-                                    df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
-                                propiedades_actualizadas += 1
+                                if precio_nuevo > 0 and precio_nuevo != precio_viejo:
+                                    historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
+                                    registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
+                                    
+                                    df.at[idx, "Precio (USD)"] = precio_nuevo
+                                    if historial_previo == "":
+                                        df.at[idx, "Historial Precio"] = registro_hoy
+                                    else:
+                                        df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                    propiedades_actualizadas += 1
                     except Exception:
                         pass
             
@@ -432,8 +415,7 @@ if not df.empty:
                         st.markdown(f"<div style='font-size: 12px; color: #666; max-height: 150px; overflow-y: auto;'>{desc_completa}</div>", unsafe_allow_html=True)
                     else:
                         st.write("No se encontró texto original.")
-                
-                # --- NUEVA VENTANA DE DEBUG IA ---
+                        
                 with st.expander("🤖 Ver razonamiento de la IA (Debug)"):
                     raw_ia = str(row.get("Respuesta Cruda IA", "No hay datos de IA para esta propiedad."))
                     if raw_ia.strip() == "":
@@ -445,7 +427,7 @@ if not df.empty:
                     st.link_button("🔗 Ver Aviso", row['Link'], use_container_width=True)
                 with col_acts:
                     if st.button("🔄 Actualizar", key=f"btn_act_{idx}", use_container_width=True):
-                        with st.spinner("Descargando con IA..."):
+                        with st.spinner("Descargando página completa con IA..."):
                             link_actual = row["Link"]
                             if link_actual and str(link_actual).startswith("http"):
                                 datos_frescos = extraer_datos_web(link_actual)
