@@ -39,33 +39,35 @@ def extraer_todo_con_ia(texto_crudo):
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        prompt = f"""Actuá como un analista inmobiliario de élite. Analizá el texto bruto de un aviso de Zonaprop y estructurá la información en una 'Ficha Limpia'.
+        prompt = f"""Actuá como un detective y tasador inmobiliario de élite. Te paso el texto en bruto de una publicación web. Extraé la información estructurada en JSON.
 
-REGLA VITAL: Devolvé ÚNICAMENTE un objeto JSON válido con dos claves: "precio_usd" y "ficha_limpia". NO escribas nada fuera de las llaves {{ }}.
+¡ESFUÉRZATE EN DEDUCIR! Especialmente el PISO y la ANTIGÜEDAD. Buscá pistas ocultas:
+- PISO: Si dice "patio", suele ser Planta Baja (PB) o 1er piso. Si tiene "terraza propia" o "vista panorámica libre", suele ser el último piso. Si menciona "escaleras", puede ser un 1er o 2do piso por escalera. Cruzá información.
+- ANTIGÜEDAD: Si solo hay renders (imágenes digitales) o habla de plazos, es "En construcción" (indicá fecha estimada si está). Si dice recién terminado, es "A estrenar".
+
+REGLA VITAL: Devolvé ÚNICAMENTE un objeto JSON válido. NO escribas texto afuera de las llaves.
 
 Estructura JSON requerida:
 {{
-    "precio_usd": Número entero con el precio de la propiedad (ej: 120000). Si no hay precio, poné 0.,
-    "ficha_limpia": "Texto en formato Markdown siguiendo ESTRICTAMENTE el orden y las reglas de abajo."
+    "barrio": "Barrio específico (ej. Villa Urquiza). No pongas CABA ni Provincia.",
+    "direccion": "Dirección exacta o aproximada si la dice. Si no, vacío.",
+    "operacion": "Venta o Alquiler",
+    "precio_num": Número entero (ej: 120000). Si no hay precio, 0.,
+    "ambientes": Número entero. Si no hay, 0.,
+    "dormitorios": Número entero. Si no hay, 0.,
+    "m2_totales": Número entero. Si no hay, 0.,
+    "m2_cubiertos": Número entero. Si no hay, 0.,
+    "m2_descubiertos": Número entero (totales menos cubiertos). Si no hay, 0.,
+    "banos_toilettes": "Texto breve, ej: '1 Baño, 1 Toilette'. Si no dice, vacío.",
+    "piso": "Piso de la unidad (ej: 'PB', '3', 'Último'). ¡Hacé tu mejor esfuerzo deductivo! Si es 100% imposible saberlo, dejalo vacío.",
+    "disposicion": "Frente, Contrafrente, Lateral, o vacío.",
+    "orientacion": "Norte, Sur, Este, Oeste... o vacío.",
+    "balcon_patio": "Texto breve, ej: 'Balcón corrido' o 'Patio'. Si no tiene, vacío.",
+    "antiguedad": "Ej: '10 años', 'A estrenar', 'En construcción (entrega Dic 2025)'. Si no hay datos, vacío.",
+    "resumen_ia": "2 renglones destacando los puntos más fuertes y detalles clave que no entran en los datos fríos (ej: amenities, cochera, estado general, luminosidad)."
 }}
 
-REGLAS PARA EL TEXTO DE 'ficha_limpia':
-Redactá el texto usando este orden exacto. Usá negritas para los títulos (ej: **Barrio:**). Si un dato no está y no podés deducirlo por contexto, OMITÍ EL ÍTEM COMPLETO (no escribas 'no menciona' ni dejes el título vacío, simplemente saltá al siguiente punto). Utilizá saltos de línea (\\n) entre cada ítem.
-
-ORDEN OBLIGATORIO:
-1. **Barrio:** (Debe ser el barrio específico, ej: Villa Urquiza. NUNCA pongas CABA, Capital Federal, GBA o Provincia).
-2. **Dirección:** (Exacta o aproximada).
-3. **Piso:** (Intentá deducirlo de la información bruta. Si es imposible saberlo, omití este ítem).
-4. **Operación:** (Ej: Venta - USD 120.000 o Alquiler - ARS 400.000).
-5. **Ambientes:** (Cantidad).
-6. **Dormitorios:** (Solo si lo explicita).
-7. **Superficie:** (Ej: 50m² Totales, 45m² Cubiertos, 5m² Descubiertos. Incluí solo los que encuentres).
-8. **Baños y Toilettes:** (Ej: 1 Baño, 1 Toilette).
-9. **Orientación:** (Norte, Sur, Este, Oeste, etc. Si no lo dice, omitilo).
-10. **Disposición:** (Frente o Contrafrente. Si es otra o no dice, omitilo).
-11. **Antigüedad:** (Años, A estrenar, o En construcción. Deducilo de la info bruta: si el aviso tiene fotos de renders y no reales, o si habla de cuotas y plazos, suele ser 'En construcción'. Si es en construcción, agregá la fecha aproximada de entrega. Si no podés deducirlo de ninguna forma, omití este ítem).
-
---- TEXTO COMPLETO EXTRAÍDO DEL LINK DEL AVISO ---
+--- TEXTO COMPLETO EXTRAÍDO ---
 {texto_crudo[:8000]}"""
         
         chat_completion = client.chat.completions.create(
@@ -90,11 +92,12 @@ ORDEN OBLIGATORIO:
         return {}, f"❌ ERROR API GROQ: {str(e)}"
 
 def cargar_datos():
-    # Mantenemos las columnas base para que no se rompa tu CSV anterior, pero agregamos "Ficha Limpia"
+    # Estructura de base de datos ampliada para el nuevo formato
     columnas_base = [
-        "Link", "Precio (USD)", "Historial Precio", "Ficha Limpia", "Notas Personales", "Respuesta Cruda IA",
-        "Barrio", "Piso", "Ambientes", "Baños", "Toilettes", "Disposición", "Orientación", "Balcón",
-        "M2 Totales", "M2 Cubiertos", "M2 Ponderados", "USD/m2 Promedio", "Antigüedad", "Resumen IA", "Descripción Completa"
+        "Link", "Precio (USD)", "Historial Precio", "Notas Personales", "Respuesta Cruda IA", "Descripción Completa",
+        "Barrio", "Direccion", "Operacion", "Ambientes", "Dormitorios", 
+        "M2 Totales", "M2 Cubiertos", "M2 Descubiertos", "Banos", "Piso", 
+        "Disposicion", "Orientacion", "Balcon Patio", "Antiguedad", "Resumen IA"
     ]
     if HF_TOKEN and REPO_ID:
         try:
@@ -108,22 +111,20 @@ def cargar_datos():
         else:
             df = pd.DataFrame(columns=columnas_base)
     
-    if "Título" in df.columns: df = df.drop(columns=["Título"])
-    if "Titulo" in df.columns: df = df.drop(columns=["Titulo"])
-    if "Borrar" in df.columns: df = df.drop(columns=["Borrar"])
+    # Limpiar columnas viejas
+    for col_vieja in ["Título", "Titulo", "Borrar", "Ficha Limpia"]:
+        if col_vieja in df.columns: df = df.drop(columns=[col_vieja])
     
     df = df.loc[:, ~df.columns.duplicated()]
     
+    # Asegurar que existan todas las columnas nuevas
     for col in columnas_base:
         if col not in df.columns:
             df[col] = ""
             
     df = df[[col for col in columnas_base if col in df.columns]]
             
-    for col in ["Ficha Limpia", "Notas Personales", "Historial Precio", "Link", "Respuesta Cruda IA"]:
-        df[col] = df[col].astype(object).fillna("")
-        
-    for col in ["Precio (USD)"]:
+    for col in ["Precio (USD)", "Ambientes", "Dormitorios", "M2 Totales", "M2 Cubiertos", "M2 Descubiertos"]:
         if col in df.columns: 
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
@@ -165,19 +166,38 @@ def extraer_datos_web(url):
         texto_visible = sopa.get_text(separator='\n', strip=True)
         texto_visible = re.sub(r'\n+', '\n', texto_visible)
 
+        descripcion_limpia = ""
+        div_desc = sopa.find(attrs={"data-qa": "posting-description"}) or sopa.find(id=re.compile("description", re.I))
+        if div_desc:
+            descripcion_limpia = div_desc.get_text(separator="\n").strip()
+        if not descripcion_limpia:
+            descripcion_limpia = "Ver publicación original."
+
         ia_data, raw_ia_response = extraer_todo_con_ia(texto_visible[:8000])
         if not ia_data: ia_data = {}
 
-        precio = parse_num_seguro(ia_data.get("precio_usd", 0))
-        ficha_limpia = str(ia_data.get("ficha_limpia", "")).strip()
-        
         return {
             "Link": url, 
-            "Precio (USD)": precio, 
-            "Ficha Limpia": ficha_limpia, 
-            "Notas Personales": "", 
-            "Historial Precio": "", 
-            "Respuesta Cruda IA": raw_ia_response
+            "Descripción Completa": descripcion_limpia,
+            "Respuesta Cruda IA": raw_ia_response,
+            "Precio (USD)": parse_num_seguro(ia_data.get("precio_num", 0)),
+            "Barrio": str(ia_data.get("barrio", "")).strip().title(),
+            "Direccion": str(ia_data.get("direccion", "")).strip(),
+            "Operacion": str(ia_data.get("operacion", "Venta")).strip(),
+            "Ambientes": parse_num_seguro(ia_data.get("ambientes", 0)),
+            "Dormitorios": parse_num_seguro(ia_data.get("dormitorios", 0)),
+            "M2 Totales": parse_num_seguro(ia_data.get("m2_totales", 0)),
+            "M2 Cubiertos": parse_num_seguro(ia_data.get("m2_cubiertos", 0)),
+            "M2 Descubiertos": parse_num_seguro(ia_data.get("m2_descubiertos", 0)),
+            "Banos": str(ia_data.get("banos_toilettes", "")).strip(),
+            "Piso": str(ia_data.get("piso", "")).strip(),
+            "Disposicion": str(ia_data.get("disposicion", "")).strip().title(),
+            "Orientacion": str(ia_data.get("orientacion", "")).strip().title(),
+            "Balcon Patio": str(ia_data.get("balcon_patio", "")).strip(),
+            "Antiguedad": str(ia_data.get("antiguedad", "")).strip(),
+            "Resumen IA": str(ia_data.get("resumen_ia", "")).strip(),
+            "Historial Precio": "",
+            "Notas Personales": ""
         }
     except Exception:
         return None
@@ -198,7 +218,7 @@ with st.container(border=True):
 
 if btn_agregar:
     if url_input:
-        with st.spinner("Generando Ficha Limpia con IA..."):
+        with st.spinner("Leyendo página y razonando (IA Detective)..."):
             datos = extraer_datos_web(url_input)
             if datos:
                 if datos["Precio (USD)"] > 0:
@@ -236,18 +256,14 @@ if not df.empty:
                             
                             ia_rapida, _ = extraer_todo_con_ia(texto_visible[:5000])
                             if ia_rapida:
-                                precio_nuevo = parse_num_seguro(ia_rapida.get("precio_usd", 0))
+                                precio_nuevo = parse_num_seguro(ia_rapida.get("precio_num", 0))
                                 precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
                                 
                                 if precio_nuevo > 0 and precio_nuevo != precio_viejo:
                                     historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
                                     registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
-                                    
                                     df.at[idx, "Precio (USD)"] = precio_nuevo
-                                    if historial_previo == "":
-                                        df.at[idx, "Historial Precio"] = registro_hoy
-                                    else:
-                                        df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
+                                    df.at[idx, "Historial Precio"] = registro_hoy if historial_previo == "" else f"{historial_previo} | {registro_hoy}"
                                     propiedades_actualizadas += 1
                     except Exception:
                         pass
@@ -267,15 +283,8 @@ if not df.empty:
         
         with col_actual:
             with st.container(border=True):
-                # Botón de eliminar arriba a la derecha
-                c_vacio, c_borrar = st.columns([5, 1])
-                with c_borrar:
-                    if st.button("🗑️", key=f"btn_del_{idx}", help="Eliminar"):
-                        df = df.drop(idx).reset_index(drop=True)
-                        guardar_datos(df)
-                        st.rerun()
-
-                # Mostrar historial y alertar si bajó de precio
+                # 1. BOTÓN ELIMINAR Y PRECIO GIGANTE
+                c_precio, c_borrar = st.columns([5, 1])
                 precio_actual = int(row['Precio (USD)']) if pd.notna(row['Precio (USD)']) else 0
                 historial_str = str(row.get("Historial Precio", ""))
                 primer_precio = precio_actual
@@ -286,76 +295,39 @@ if not df.empty:
                     if match_primer_precio:
                         primer_precio = int(match_primer_precio.group(1))
 
+                with c_precio:
+                    st.markdown(f"<h2 style='margin:0; padding:0; color:#1E88E5;'>{format_precio(precio_actual)}</h2>", unsafe_allow_html=True)
+                with c_borrar:
+                    if st.button("🗑️", key=f"btn_del_{idx}", help="Eliminar"):
+                        df = df.drop(idx).reset_index(drop=True)
+                        guardar_datos(df)
+                        st.rerun()
+
+                # Cartel de rebaja si bajó
                 if 0 < precio_actual < primer_precio:
-                    st.markdown("<div style='background:#ffebee; color:#c62828; padding:4px 8px; border-radius:4px; font-size:12px; font-weight:bold; margin-bottom:10px; display:inline-block;'>🔥 BAJÓ DE PRECIO</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='background:#ffebee; color:#c62828; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:bold; display:inline-block; margin-top:4px;'>🔥 BAJÓ DE PRECIO</div>", unsafe_allow_html=True)
 
-                # --- RENDERIZADO DE LA FICHA LIMPIA ---
-                ficha_limpia = str(row.get("Ficha Limpia", "")).strip()
+                # 2. SUBTÍTULO: BARRIO Y DIRECCIÓN
+                barrio = str(row.get('Barrio', '')).strip()
+                direccion = str(row.get('Direccion', '')).strip()
+                ambientes = int(row.get('Ambientes', 0)) if pd.notna(row.get('Ambientes')) else 0
                 
-                if ficha_limpia == "":
-                    # Si es una propiedad vieja del CSV que no tiene ficha, armamos un aviso
-                    st.warning("Ficha no generada aún. Hacé clic en 'Actualizar' abajo.")
-                else:
-                    st.markdown(f"<div style='font-size: 14px; color: #333; line-height: 1.6;'>{ficha_limpia}</div>", unsafe_allow_html=True)
+                if not barrio: barrio = "Ubicación a confirmar"
                 
-                st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
-
-                # --- NOTAS PERSONALES ---
-                nuevas_notas = st.text_area("Notas", value=str(row.get('Notas Personales', '')), height=68, key=f"notas_{idx}", label_visibility="collapsed", placeholder="📝 Escribí tus notas personales acá...")
-                if nuevas_notas != str(row.get('Notas Personales', '')):
-                    df.at[idx, "Notas Personales"] = nuevas_notas
-                    guardar_datos(df)
-                    st.rerun()
-
-                # --- EXPANDERS (Historial y Debug) ---
-                with st.expander("📉 Historial de Precios"):
-                    if historial_str and historial_str.strip() != "":
-                        for item in historial_str.split("|"):
-                            item_limpio = item.strip()
-                            match = re.search(r'(?:USD|\$)\s*([\d\.]+)', item_limpio)
-                            if match:
-                                val = int(match.group(1).replace('.', ''))
-                                item_limpio = item_limpio.replace(match.group(0), format_precio(val))
-                            st.markdown(f"<div style='font-size: 13px;'>• {item_limpio}</div>", unsafe_allow_html=True)
-                    else:
-                        st.markdown("<div style='font-size: 13px;'>Sin cambios registrados.</div>", unsafe_allow_html=True)
-                        
-                with st.expander("🤖 Ver razonamiento de la IA (Debug)"):
-                    raw_ia = str(row.get("Respuesta Cruda IA", "No hay datos de IA para esta propiedad."))
-                    if raw_ia.strip() == "":
-                        raw_ia = "No hay datos de IA guardados."
-                    st.code(raw_ia, language="json")
-
-                # --- BOTONES DE ACCIÓN ---
-                col_links, col_acts = st.columns(2)
-                with col_links:
-                    st.link_button("🔗 Ver Aviso", row['Link'], use_container_width=True)
-                with col_acts:
-                    if st.button("🔄 Actualizar", key=f"btn_act_{idx}", use_container_width=True):
-                        with st.spinner("Regenerando Ficha con IA..."):
-                            link_actual = row["Link"]
-                            if link_actual and str(link_actual).startswith("http"):
-                                datos_frescos = extraer_datos_web(link_actual)
-                                if datos_frescos:
-                                    df.at[idx, "Ficha Limpia"] = datos_frescos["Ficha Limpia"]
-                                    df.at[idx, "Respuesta Cruda IA"] = datos_frescos["Respuesta Cruda IA"]
-                                    
-                                    if int(datos_frescos["Precio (USD)"]) > 0:
-                                        precio_nuevo = datos_frescos["Precio (USD)"]
-                                        precio_viejo = int(row["Precio (USD)"]) if pd.notna(row["Precio (USD)"]) else 0
-                                        
-                                        if precio_nuevo > 0 and precio_nuevo != precio_viejo:
-                                            hoy = datetime.now().strftime("%d/%m/%Y")
-                                            historial_previo = str(row["Historial Precio"]) if pd.notna(row["Historial Precio"]) else ""
-                                            registro_hoy = f"{hoy}: {format_precio(precio_nuevo)}"
-                                            
-                                            df.at[idx, "Precio (USD)"] = precio_nuevo
-                                            if historial_previo == "":
-                                                df.at[idx, "Historial Precio"] = registro_hoy
-                                            else:
-                                                df.at[idx, "Historial Precio"] = f"{historial_previo} | {registro_hoy}"
-                                        
-                                    guardar_datos(df)
-                                    st.rerun()
-else:
-    st.info("No tenés propiedades cargadas. Pegá un link arriba para empezar.")
+                amb_str = f" • {ambientes} Amb." if ambientes > 0 else ""
+                dir_str = f"<br><span style='font-size:13px; font-weight:normal;'>📍 {direccion}</span>" if direccion else ""
+                
+                st.markdown(f"<div style='margin-top:8px; margin-bottom:12px; color:#333; font-weight:bold; font-size:15px;'>{barrio}{amb_str}{dir_str}</div>", unsafe_allow_html=True)
+                
+                # 3. GRILLA DE ÍCONOS COMPACTA
+                # Construimos las líneas de texto dinámicamente, omitiendo lo que esté vacío
+                
+                # SUPERFICIE
+                m2_tot = int(row.get('M2 Totales', 0)) if pd.notna(row.get('M2 Totales')) else 0
+                m2_cub = int(row.get('M2 Cubiertos', 0)) if pd.notna(row.get('M2 Cubiertos')) else 0
+                m2_desc = int(row.get('M2 Descubiertos', 0)) if pd.notna(row.get('M2 Descubiertos')) else 0
+                
+                sup_parts = []
+                if m2_tot > 0: sup_parts.append(f"{m2_tot}m² Tot")
+                if m2_cub > 0: sup_parts.append(f"{m2_cub}m² Cub")
+                if m2_desc > 0: sup_parts.append(f"{m2_desc}m²
